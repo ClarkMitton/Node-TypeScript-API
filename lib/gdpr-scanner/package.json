@@ -1,0 +1,24 @@
+{
+  "name": "@workspace/gdpr-scanner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc --build",
+    "typecheck": "tsc --build --dry"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.29.7",
+    "@babel/types": "^7.29.7",
+    "adm-zip": "^0.5.17",
+    "glob": "^13.0.6",
+    "simple-git": "^3.36.0"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.4.4",
+    "@types/node": "catalog:"
+  }
+}

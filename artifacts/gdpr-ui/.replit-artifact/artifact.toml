@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "GDPR Scanner UI"
+version = "1.0.0"
+id = "artifacts/gdpr-ui"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 24272
+
+[services.development]
+run = "pnpm --filter @workspace/gdpr-ui run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/gdpr-ui", "run", "build" ]
+publicDir = "artifacts/gdpr-ui/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24272"
+BASE_PATH = "/"

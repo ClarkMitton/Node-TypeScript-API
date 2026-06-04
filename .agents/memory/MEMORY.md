@@ -1,0 +1,1 @@
+- [Workspace lib exports for esbuild](workspace-lib-esbuild.md) — libs bundled by the api-server's esbuild must export `./src/index.ts`, not `./dist/index.js`.
