@@ -12,13 +12,11 @@ import {
 } from "@workspace/api-zod";
 import { runFullScan } from "@workspace/gdpr-scanner";
 import path from "path";
-import { fileURLToPath } from "url";
 import { logger } from "../lib/logger.js";
 
 const router: IRouter = Router();
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REPOS_DIR = path.resolve(__dirname, "../../../../../repos");
+const REPOS_DIR = path.resolve(process.cwd(), "repos");
 
 router.get("/scans/stats", async (_req, res): Promise<void> => {
   const rows = await db.select().from(scans).orderBy(desc(scans.createdAt)).limit(5);
