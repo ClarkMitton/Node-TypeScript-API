@@ -10,6 +10,7 @@ import type {
   DataType,
   DPOSummary,
   DPOFinding,
+  DPOAction,
 } from "./types.js";
 
 const DEP_CATEGORY_WEIGHTS: Record<string, number> = {
@@ -200,57 +201,115 @@ function buildDPOSummary(
       `Personal data processing was confirmed in this repository. Specifically: ${parts.join(" and ")}. Each finding below is supported by direct evidence in the code.`;
   }
 
-  // What was found
-  const whatWasFound: DPOFinding[] = [];
-
-  if (!hasFlows && !hasCapability) {
-    whatWasFound.push({
-      description: "No user data inputs were detected in any part of this codebase.",
-      badge: "NO_DATA_FOUND",
-      colour: "GREEN",
-    });
-  }
-
-  for (const flow of flows) {
-    whatWasFound.push({
-      description: `${capitalise(dataLabel(flow.dataType))} from ${sourceLabel(flow.source)} is sent to ${sinkLabel(flow.sink)}. (${flow.file}, line ${flow.line})`,
-      badge: "VERIFIED_FLOW",
-      colour: "RED",
-    });
-  }
-
-  for (const pf of potentialFindings.slice(0, 6)) {
-    const capDesc =
-      pf.category === "persistence"
-        ? "Data storage code is present"
-        : pf.category === "external-transfer"
-        ? "Code capable of sending data externally is present"
-        : pf.category === "logging"
-        ? "Logging code is present"
-        : "Data processing code is present";
-    whatWasFound.push({
-      description: `${capDesc}, but no user input was traced into it. This is a capability only, not a confirmed data flow. (${pf.file ?? "unknown file"})`,
-      badge: "CAPABILITY_ONLY",
-      colour: "AMBER",
-    });
-  }
-
-  // What was NOT found
-  const whatWasNotFound: string[] = [];
   const identifiableCount = flows.filter((f) => f.dataType === "IDENTIFIABLE").length;
   const transferCount = flows.filter((f) => f.tags.includes("USER_DATA_TRANSFER")).length;
   const storageCount = flows.filter((f) => f.tags.includes("USER_DATA_STORAGE")).length;
   const hasAuth = deps.some((d) => d.category.startsWith("Auth"));
   const hasAnalytics = deps.some((d) => d.category === "Analytics");
 
-  if (!hasFlows) whatWasNotFound.push("No user accounts or data input handling detected");
-  if (identifiableCount === 0) whatWasNotFound.push("No personal data fields (email, name, phone number, address) detected in any confirmed data flow");
-  if (transferCount === 0) whatWasNotFound.push("No data sent to external services detected");
-  if (storageCount === 0) whatWasNotFound.push("No confirmed storage of user information in a database or file");
-  if (!hasAuth) whatWasNotFound.push("No user login or authentication system detected");
-  if (!hasAnalytics) whatWasNotFound.push("No tracking or analytics library detected");
+  // ── Problems (what needs attention) ────────────────────────────────────────
+  const problems: DPOFinding[] = [];
 
-  // Risk level and reason
+  if (!hasFlows && !hasCapability) {
+    problems.push({
+      description: "No personal data collection was found anywhere in this codebase.",
+      badge: "NO_DATA_FOUND",
+      colour: "GREEN",
+    });
+  }
+
+  for (const flow of flows) {
+    let plain: string;
+    if (flow.source.startsWith("field_evidence:")) {
+      const field = flow.source.replace("field_evidence:", "");
+      plain = `Personal data is being saved to a database — specifically a field called "${field}" was found in a write operation. (${flow.file}, line ${flow.line})`;
+    } else if (flow.source === "file_upload") {
+      plain = `Files or media are being uploaded to cloud storage. Uploaded files may contain personal information such as faces, names, or voice recordings. (${flow.file}, line ${flow.line})`;
+    } else {
+      plain = `${capitalise(dataLabel(flow.dataType))} entered by the user is being ${flow.tags.includes("USER_DATA_STORAGE") ? "saved to a database" : "sent to an external service"}. (${flow.file}, line ${flow.line})`;
+    }
+    problems.push({ description: plain, badge: "VERIFIED_FLOW", colour: "RED" });
+  }
+
+  for (const pf of potentialFindings.slice(0, 4)) {
+    const capDesc =
+      pf.category === "persistence"
+        ? "Database or file storage code is present in this app, but we couldn't confirm personal data is being written to it"
+        : pf.category === "external-transfer"
+        ? "Code that can send data to an external server exists, but no personal data was traced into it"
+        : pf.category === "logging"
+        ? "Logging is set up in this app — worth checking logs don't capture personal data"
+        : "Data-handling code exists in this app";
+    problems.push({
+      description: `${capDesc}. (${pf.file ?? "unknown file"})`,
+      badge: "CAPABILITY_ONLY",
+      colour: "AMBER",
+    });
+  }
+
+  // ── What's working well ─────────────────────────────────────────────────────
+  const workingWell: string[] = [];
+  if (!hasFlows) workingWell.push("No confirmed collection or storage of personal data");
+  if (identifiableCount === 0) workingWell.push("No names, email addresses, phone numbers or other identifiers confirmed as being stored");
+  if (transferCount === 0) workingWell.push("No data being sent to third-party services");
+  if (storageCount === 0) workingWell.push("No confirmed database writes of personal information");
+  if (!hasAuth) workingWell.push("No user login or account system — so no user identity is being tracked");
+  if (!hasAnalytics) workingWell.push("No advertising or analytics tracking libraries found");
+
+  // ── What you need to do ─────────────────────────────────────────────────────
+  const actionItems: DPOAction[] = [];
+
+  if (hasFlows) {
+    actionItems.push({
+      action: "Add a Privacy Notice (also called a Privacy Policy) to your app. It must explain what personal data you collect, why you collect it, how long you keep it, and who can access it. This is required by GDPR Article 13.",
+      type: "CODE_CHANGE",
+      priority: "HIGH",
+    });
+    actionItems.push({
+      action: "Document these data flows in your Records of Processing Activities. Every organisation that handles personal data must keep a written record of what they process and why (GDPR Article 30).",
+      type: "POLICY",
+      priority: "HIGH",
+    });
+  }
+
+  if (identifiableCount > 0) {
+    actionItems.push({
+      action: "Make sure you have a clear legal reason to collect and store this personal data. The most common reasons are: the user gave consent, it's necessary for a contract with the user, or you have a legitimate interest. You must be able to prove which one applies.",
+      type: "POLICY",
+      priority: "HIGH",
+    });
+    actionItems.push({
+      action: "Carry out a Data Protection Impact Assessment (DPIA). Because you're storing identifiable personal data, GDPR requires you to assess the risks to the people whose data you hold, especially if this is sensitive information like health, children's data, or financial details.",
+      type: "DPIA",
+      priority: identifiableCount >= 3 ? "HIGH" : "MEDIUM",
+    });
+  }
+
+  if (storageCount > 0) {
+    actionItems.push({
+      action: "Make sure stored personal data can be deleted when a user asks (the 'Right to Erasure' under GDPR Article 17). Add a way for users to request deletion of their account or data.",
+      type: "CODE_CHANGE",
+      priority: "MEDIUM",
+    });
+  }
+
+  if (flows.some((f) => f.source === "file_upload")) {
+    actionItems.push({
+      action: "File uploads need extra care. Before uploading, tell users what you do with their files, how long you keep them, and who can see them. If uploads might contain photos of people, this could require a DPIA.",
+      type: "DPIA",
+      priority: "MEDIUM",
+    });
+  }
+
+  if (!hasFlows && !hasCapability) {
+    actionItems.push({
+      action: "No action required at this time. Re-run this scan when new features are added that handle user data.",
+      type: "REVIEW",
+      priority: "LOW",
+    });
+  }
+
+  // ── Risk level and bottom-line reason ──────────────────────────────────────
   const dpoRisk: "LOW" | "MEDIUM" | "HIGH" =
     overallRisk === "HIGH" ? "HIGH"
     : overallRisk === "MEDIUM" ? "MEDIUM"
@@ -258,17 +317,14 @@ function buildDPOSummary(
 
   let riskReason: string;
   if (!hasFlows) {
-    riskReason =
-      "No confirmed personal data processing was found. This repository does not appear to require GDPR compliance measures based on the code analysed.";
+    riskReason = "No confirmed personal data handling was found. This codebase does not appear to need GDPR compliance work based on what was scanned — but this should be re-checked whenever new features are added.";
   } else if (dpoRisk === "HIGH") {
-    riskReason =
-      "Confirmed flows of personal data — such as names, email addresses, or identifiers — to storage or external services were detected. A lawful basis under Article 6 GDPR and up-to-date Records of Processing Activities (Article 30) are required.";
+    riskReason = `${flows.length} confirmed instance${flows.length > 1 ? "s" : ""} of personal data being stored or transferred. Action is needed before this app is used with real users — particularly a Privacy Notice, lawful basis documentation, and a DPIA.`;
   } else {
-    riskReason =
-      "Limited personal data processing was detected. Review each confirmed flow above and ensure a lawful basis exists. Update your Records of Processing Activities if these flows are used in production.";
+    riskReason = "Limited personal data handling was confirmed. Review the items above and make sure a lawful basis exists for each data flow before going live.";
   }
 
-  return { overview, whatWasFound, whatWasNotFound, riskLevel: dpoRisk, riskReason };
+  return { overview, problems, workingWell, actionItems, riskLevel: dpoRisk, riskReason };
 }
 
 // ─── Audit summary generation ──────────────────────────────────────────────────

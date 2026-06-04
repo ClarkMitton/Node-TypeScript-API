@@ -65,6 +65,7 @@ export interface AuditCard {
 
 export type DPOBadge = "NO_DATA_FOUND" | "CAPABILITY_ONLY" | "VERIFIED_FLOW" | "INCOMPLETE_FLOW";
 export type DPOColour = "GREEN" | "AMBER" | "RED";
+export type DPOActionType = "DPIA" | "CODE_CHANGE" | "POLICY" | "REVIEW";
 
 export interface DPOFinding {
   description: string;
@@ -72,10 +73,17 @@ export interface DPOFinding {
   colour: DPOColour;
 }
 
+export interface DPOAction {
+  action: string;
+  type: DPOActionType;
+  priority: "HIGH" | "MEDIUM" | "LOW";
+}
+
 export interface DPOSummary {
   overview: string;
-  whatWasFound: DPOFinding[];
-  whatWasNotFound: string[];
+  problems: DPOFinding[];
+  workingWell: string[];
+  actionItems: DPOAction[];
   riskLevel: "LOW" | "MEDIUM" | "HIGH";
   riskReason: string;
 }
