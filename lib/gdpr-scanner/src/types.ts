@@ -61,6 +61,25 @@ export interface AuditCard {
   tags: RiskTag[];
 }
 
+// ─── DPO plain-English summary ─────────────────────────────────────────────────
+
+export type DPOBadge = "NO_DATA_FOUND" | "CAPABILITY_ONLY" | "VERIFIED_FLOW" | "INCOMPLETE_FLOW";
+export type DPOColour = "GREEN" | "AMBER" | "RED";
+
+export interface DPOFinding {
+  description: string;
+  badge: DPOBadge;
+  colour: DPOColour;
+}
+
+export interface DPOSummary {
+  overview: string;
+  whatWasFound: DPOFinding[];
+  whatWasNotFound: string[];
+  riskLevel: "LOW" | "MEDIUM" | "HIGH";
+  riskReason: string;
+}
+
 export interface AuditSummary {
   repo: string;
   overallRisk: RiskLevel;
@@ -72,6 +91,7 @@ export interface AuditSummary {
   potentialPatternCount: number;
   conclusion: string;
   nonFindings: string[];
+  dpoSummary: DPOSummary;
 }
 
 export interface DependencyFinding {

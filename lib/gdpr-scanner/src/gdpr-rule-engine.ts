@@ -8,6 +8,8 @@ import type {
   AuditCard,
   AuditSummary,
   DataType,
+  DPOSummary,
+  DPOFinding,
 } from "./types.js";
 
 const DEP_CATEGORY_WEIGHTS: Record<string, number> = {
@@ -59,7 +61,7 @@ function capitalise(s: string): string {
 }
 
 function whyItMatters(flow: VerifiedFlow): string {
-  const { dataType, sink, tags } = flow;
+  const { sink, tags } = flow;
   if (tags.includes("USER_DATA_TRANSFER")) {
     return `Personal data sourced from ${flow.source} is sent to an external endpoint (${sink}). Article 44–49 GDPR govern international transfers; Article 13/14 require disclosure of recipients.`;
   }
@@ -129,6 +131,129 @@ function buildAuditCards(flows: VerifiedFlow[]): AuditCard[] {
   }));
 }
 
+// ─── DPO plain-English summary ─────────────────────────────────────────────────
+
+function sourceLabel(source: string): string {
+  if (source.includes(".body")) return "a form submission or request body";
+  if (source.includes(".params")) return "a URL parameter";
+  if (source.includes(".query")) return "a URL query string";
+  return "user input";
+}
+
+function sinkLabel(sink: string): string {
+  if (sink.includes("writeFile") || sink.includes("appendFile")) return "file storage on disk";
+  if (sink.includes("insert") || sink.includes("create") || sink.includes("upsert") || sink.includes("save")) return "a database";
+  if (sink === "fetch" || sink.includes("axios")) return "an external service";
+  if (sink.includes("localStorage") || sink.includes("sessionStorage")) return "browser storage";
+  if (sink.includes("console") || sink.includes("logger")) return "log output";
+  return "a data destination";
+}
+
+function dataLabel(dataType: string): string {
+  if (dataType === "IDENTIFIABLE") return "a personal identifier (such as an email address or name)";
+  if (dataType === "BEHAVIOURAL") return "behavioural data";
+  if (dataType === "TECHNICAL") return "a technical value";
+  return "data";
+}
+
+function buildDPOSummary(
+  flows: VerifiedFlow[],
+  potentialFindings: Finding[],
+  deps: DependencyFinding[],
+  overallRisk: RiskLevel,
+): DPOSummary {
+  const hasFlows = flows.length > 0;
+  const hasCapability = potentialFindings.length > 0;
+
+  // Overview
+  let overview: string;
+  if (!hasFlows && !hasCapability) {
+    overview =
+      "This repository was scanned and no processing of personal data was detected. No user inputs, data storage, or data transfers were found in the code.";
+  } else if (!hasFlows && hasCapability) {
+    overview =
+      `This repository contains code that is capable of storing or transferring data, but no confirmed connection between user input and a data destination was found. ${potentialFindings.length} capability pattern(s) are noted below as informational only — they do not contribute to the risk score.`;
+  } else {
+    const storageCount = flows.filter((f) => f.tags.includes("USER_DATA_STORAGE")).length;
+    const transferCount = flows.filter((f) => f.tags.includes("USER_DATA_TRANSFER")).length;
+    const parts: string[] = [];
+    if (storageCount > 0) parts.push(`user data is stored (${storageCount} confirmed instance${storageCount > 1 ? "s" : ""})`);
+    if (transferCount > 0) parts.push(`user data is sent to an external service (${transferCount} confirmed instance${transferCount > 1 ? "s" : ""})`);
+    overview =
+      `Personal data processing was confirmed in this repository. Specifically: ${parts.join(" and ")}. Each finding below is supported by direct evidence in the code.`;
+  }
+
+  // What was found
+  const whatWasFound: DPOFinding[] = [];
+
+  if (!hasFlows && !hasCapability) {
+    whatWasFound.push({
+      description: "No user data inputs were detected in any part of this codebase.",
+      badge: "NO_DATA_FOUND",
+      colour: "GREEN",
+    });
+  }
+
+  for (const flow of flows) {
+    whatWasFound.push({
+      description: `${capitalise(dataLabel(flow.dataType))} from ${sourceLabel(flow.source)} is sent to ${sinkLabel(flow.sink)}. (${flow.file}, line ${flow.line})`,
+      badge: "VERIFIED_FLOW",
+      colour: "RED",
+    });
+  }
+
+  for (const pf of potentialFindings.slice(0, 6)) {
+    const capDesc =
+      pf.category === "persistence"
+        ? "Data storage code is present"
+        : pf.category === "external-transfer"
+        ? "Code capable of sending data externally is present"
+        : pf.category === "logging"
+        ? "Logging code is present"
+        : "Data processing code is present";
+    whatWasFound.push({
+      description: `${capDesc}, but no user input was traced into it. This is a capability only, not a confirmed data flow. (${pf.file ?? "unknown file"})`,
+      badge: "CAPABILITY_ONLY",
+      colour: "AMBER",
+    });
+  }
+
+  // What was NOT found
+  const whatWasNotFound: string[] = [];
+  const identifiableCount = flows.filter((f) => f.dataType === "IDENTIFIABLE").length;
+  const transferCount = flows.filter((f) => f.tags.includes("USER_DATA_TRANSFER")).length;
+  const storageCount = flows.filter((f) => f.tags.includes("USER_DATA_STORAGE")).length;
+  const hasAuth = deps.some((d) => d.category.startsWith("Auth"));
+  const hasAnalytics = deps.some((d) => d.category === "Analytics");
+
+  if (!hasFlows) whatWasNotFound.push("No user accounts or data input handling detected");
+  if (identifiableCount === 0) whatWasNotFound.push("No personal data fields (email, name, phone number, address) detected in any confirmed data flow");
+  if (transferCount === 0) whatWasNotFound.push("No data sent to external services detected");
+  if (storageCount === 0) whatWasNotFound.push("No confirmed storage of user information in a database or file");
+  if (!hasAuth) whatWasNotFound.push("No user login or authentication system detected");
+  if (!hasAnalytics) whatWasNotFound.push("No tracking or analytics library detected");
+
+  // Risk level and reason
+  const dpoRisk: "LOW" | "MEDIUM" | "HIGH" =
+    overallRisk === "HIGH" ? "HIGH"
+    : overallRisk === "MEDIUM" ? "MEDIUM"
+    : "LOW";
+
+  let riskReason: string;
+  if (!hasFlows) {
+    riskReason =
+      "No confirmed personal data processing was found. This repository does not appear to require GDPR compliance measures based on the code analysed.";
+  } else if (dpoRisk === "HIGH") {
+    riskReason =
+      "Confirmed flows of personal data — such as names, email addresses, or identifiers — to storage or external services were detected. A lawful basis under Article 6 GDPR and up-to-date Records of Processing Activities (Article 30) are required.";
+  } else {
+    riskReason =
+      "Limited personal data processing was detected. Review each confirmed flow above and ensure a lawful basis exists. Update your Records of Processing Activities if these flows are used in production.";
+  }
+
+  return { overview, whatWasFound, whatWasNotFound, riskLevel: dpoRisk, riskReason };
+}
+
 // ─── Audit summary generation ──────────────────────────────────────────────────
 
 function buildAuditSummary(
@@ -139,15 +264,9 @@ function buildAuditSummary(
   overallRisk: RiskLevel,
   confidence: number,
 ): AuditSummary {
-  const storageCount = flows.filter((f) =>
-    f.tags.includes("USER_DATA_STORAGE"),
-  ).length;
-  const externalCount = flows.filter((f) =>
-    f.tags.includes("USER_DATA_TRANSFER"),
-  ).length;
-  const loggingCount = flows.filter((f) =>
-    f.tags.includes("IDENTIFIABLE_DATA_LOGGING"),
-  ).length;
+  const storageCount = flows.filter((f) => f.tags.includes("USER_DATA_STORAGE")).length;
+  const externalCount = flows.filter((f) => f.tags.includes("USER_DATA_TRANSFER")).length;
+  const loggingCount = flows.filter((f) => f.tags.includes("IDENTIFIABLE_DATA_LOGGING")).length;
 
   const nonFindings: string[] = [];
   if (flows.length === 0) nonFindings.push("No verified personal data flows detected");
@@ -163,7 +282,7 @@ function buildAuditSummary(
       "No evidence of GDPR-relevant personal data processing was detected. The repository appears to contain no verified user data flows.";
   } else if (flows.length === 0) {
     conclusion =
-      `${potentialFindings.length} capability pattern(s) detected (storage/transfer sinks present) but no verified personal data source → sink flow was established. Risk classification is based on potential exposure only.`;
+      `${potentialFindings.length} capability pattern(s) detected (storage/transfer sinks present) but no verified personal data source → sink flow was established. Sinks without a proven user-data source are classified as neutral capabilities and do not contribute to the risk score.`;
   } else {
     const flowSummary = [
       storageCount > 0 ? `${storageCount} storage flow(s)` : "",
@@ -174,6 +293,8 @@ function buildAuditSummary(
       .join(", ");
     conclusion = `${flows.length} verified personal data flow(s) detected: ${flowSummary}. Each flow has a confirmed user input source linked to a data sink.`;
   }
+
+  const dpoSummary = buildDPOSummary(flows, potentialFindings, deps, overallRisk);
 
   return {
     repo,
@@ -186,6 +307,7 @@ function buildAuditSummary(
     potentialPatternCount: potentialFindings.length,
     conclusion,
     nonFindings,
+    dpoSummary,
   };
 }
 
@@ -207,12 +329,14 @@ export function computeGDPRScore(
   let totalConfidence = 0;
   let flowCount = 0;
 
-  // Primary scoring: verified flows only
+  // PRIMARY scoring: verified flows ONLY
+  // A sink without a proven user-data source contributes nothing.
   for (const flow of verifiedFlows) {
     totalConfidence += flow.confidence;
     flowCount++;
 
-    const weight = flow.dataType === "IDENTIFIABLE" ? 1.5
+    const weight =
+      flow.dataType === "IDENTIFIABLE" ? 1.5
       : flow.dataType === "BEHAVIOURAL" ? 1.0
       : 0.7;
 
@@ -230,21 +354,18 @@ export function computeGDPRScore(
     }
   }
 
-  // Secondary scoring: potential patterns (much lower weight, no flow proven)
-  const potentialCapabilityScore = Math.min(potentialFindings.length * 2, 15);
-  // Spread across categories that aren't already covered by verified flows
-  if (verifiedFlows.length === 0) {
-    breakdown["persistence"]! += potentialCapabilityScore;
-  }
+  // CAPABILITY-ONLY patterns (sinks without proven sources) → score 0
+  // They are informational only; they must not inflate the risk score.
+  void potentialFindings; // acknowledged, not scored
 
-  // Dependency scoring (informational, low weight)
+  // Dependency scoring (informational, low weight — libraries alone are not violations)
   for (const dep of deps) {
     const weight = DEP_CATEGORY_WEIGHTS[dep.category] ?? 2;
     breakdown["dependencies"]! += weight;
   }
   breakdown["dependencies"] = Math.min(breakdown["dependencies"]!, 20);
 
-  // Cap all breakdown values
+  // Cap breakdown values
   breakdown["externalTransfer"] = Math.min(breakdown["externalTransfer"]!, 40);
   breakdown["persistence"] = Math.min(breakdown["persistence"]!, 40);
   breakdown["identity"] = Math.min(breakdown["identity"]!, 20);
@@ -308,7 +429,6 @@ export function buildRepoIndex(
     return f;
   });
 
-  // Overall tags on the summary
   const _tags = summaryTags(verifiedFlows, potentialFindings, deps);
 
   return {

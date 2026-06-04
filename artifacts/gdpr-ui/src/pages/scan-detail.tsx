@@ -6,7 +6,7 @@ import { RiskBadge } from "@/components/risk-badge";
 import { ScoreGauge } from "@/components/score-gauge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Loader2, Trash2, Github, AlertCircle, CheckCircle2, ShieldAlert, ArrowRight, Info } from "lucide-react";
+import { ArrowLeft, Loader2, Trash2, Github, AlertCircle, CheckCircle2, ShieldAlert, ArrowRight, Info, FileText } from "lucide-react";
 import { Link } from "wouter";
 
 // ─── Local types for new fields ───────────────────────────────────────────────
@@ -49,6 +49,23 @@ type AuditCard = {
   tags: string[];
 };
 
+type DPOBadge = "NO_DATA_FOUND" | "CAPABILITY_ONLY" | "VERIFIED_FLOW" | "INCOMPLETE_FLOW";
+type DPOColour = "GREEN" | "AMBER" | "RED";
+
+type DPOFinding = {
+  description: string;
+  badge: DPOBadge;
+  colour: DPOColour;
+};
+
+type DPOSummary = {
+  overview: string;
+  whatWasFound: DPOFinding[];
+  whatWasNotFound: string[];
+  riskLevel: "LOW" | "MEDIUM" | "HIGH";
+  riskReason: string;
+};
+
 type AuditSummary = {
   repo: string;
   overallRisk: string;
@@ -60,6 +77,7 @@ type AuditSummary = {
   potentialPatternCount: number;
   conclusion: string;
   nonFindings: string[];
+  dpoSummary?: DPOSummary;
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -89,6 +107,103 @@ const CATEGORY_COLORS: Record<string, string> = {
 
 function confidencePct(c: number): string {
   return `${Math.round(c * 100)}%`;
+}
+
+// ─── DPO summary panel ────────────────────────────────────────────────────────
+
+const BADGE_STYLES: Record<string, { bg: string; text: string; label: string }> = {
+  NO_DATA_FOUND:   { bg: "bg-[#1a2d1a]", text: "text-[#3fb950]", label: "NO DATA FOUND" },
+  CAPABILITY_ONLY: { bg: "bg-[#2d2a1a]", text: "text-[#e3b341]", label: "CAPABILITY ONLY" },
+  VERIFIED_FLOW:   { bg: "bg-[#2d1a1a]", text: "text-[#f97583]", label: "VERIFIED FLOW" },
+  INCOMPLETE_FLOW: { bg: "bg-[#1a1f2d]", text: "text-[#58a6ff]", label: "INCOMPLETE FLOW" },
+};
+
+const DPO_COLOUR_ACCENT: Record<string, string> = {
+  GREEN: "border-l-[#3fb950]",
+  AMBER: "border-l-[#e3b341]",
+  RED:   "border-l-[#f97583]",
+};
+
+const DPO_RISK_STYLES: Record<string, { bg: string; text: string; border: string }> = {
+  LOW:    { bg: "bg-[#1a2d1a]", text: "text-[#3fb950]",  border: "border-[#3fb950]/30" },
+  MEDIUM: { bg: "bg-[#2d2a1a]", text: "text-[#e3b341]",  border: "border-[#e3b341]/30" },
+  HIGH:   { bg: "bg-[#2d1a1a]", text: "text-[#f97583]",  border: "border-[#f97583]/30" },
+};
+
+function DPOSummaryPanel({ dpo }: { dpo: DPOSummary }) {
+  const riskStyle = DPO_RISK_STYLES[dpo.riskLevel] ?? DPO_RISK_STYLES["LOW"]!;
+
+  return (
+    <div className="bg-[#161b22] border border-[#21262d] rounded-lg overflow-hidden">
+      {/* Header */}
+      <div className="px-5 py-3 border-b border-[#21262d] flex items-center gap-2">
+        <FileText className="h-3.5 w-3.5 text-[#484f58]" />
+        <h3 className="text-xs text-[#8b949e] uppercase tracking-widest font-medium">
+          DPO Summary — Plain English
+        </h3>
+        <span className="ml-auto text-[10px] text-[#484f58]">for Data Protection Officers</span>
+      </div>
+
+      {/* Overview */}
+      <div className="px-5 py-4 border-b border-[#21262d]">
+        <p className="text-[10px] text-[#484f58] uppercase tracking-widest mb-1.5 font-medium">Overview</p>
+        <p className="text-sm text-[#c9d1d9] leading-relaxed">{dpo.overview}</p>
+      </div>
+
+      {/* What was found */}
+      <div className="px-5 py-4 border-b border-[#21262d]">
+        <p className="text-[10px] text-[#484f58] uppercase tracking-widest mb-3 font-medium">
+          What was found
+        </p>
+        <div className="space-y-2">
+          {dpo.whatWasFound.map((item, i) => {
+            const badge = BADGE_STYLES[item.badge] ?? BADGE_STYLES["CAPABILITY_ONLY"]!;
+            const accent = DPO_COLOUR_ACCENT[item.colour] ?? "";
+            return (
+              <div
+                key={i}
+                className={`flex items-start gap-3 bg-[#0d1117] rounded border-l-2 px-3 py-2.5 ${accent}`}
+              >
+                <span
+                  className={`shrink-0 mt-0.5 text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded ${badge.bg} ${badge.text}`}
+                >
+                  {badge.label}
+                </span>
+                <p className="text-xs text-[#8b949e] leading-relaxed">{item.description}</p>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* What was NOT found */}
+      {dpo.whatWasNotFound.length > 0 && (
+        <div className="px-5 py-4 border-b border-[#21262d]">
+          <p className="text-[10px] text-[#484f58] uppercase tracking-widest mb-2 font-medium">
+            What was NOT found
+          </p>
+          <ul className="space-y-1.5">
+            {dpo.whatWasNotFound.map((item, i) => (
+              <li key={i} className="flex items-start gap-2 text-xs text-[#8b949e]">
+                <CheckCircle2 className="h-3 w-3 text-[#3fb950] shrink-0 mt-0.5" />
+                {item}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Risk summary */}
+      <div className={`px-5 py-4 ${riskStyle.bg} border-t ${riskStyle.border}`}>
+        <div className="flex items-start gap-3">
+          <div className={`shrink-0 text-[10px] font-bold tracking-widest px-2 py-1 rounded border ${riskStyle.border} ${riskStyle.text}`}>
+            {dpo.riskLevel} RISK
+          </div>
+          <p className="text-xs text-[#8b949e] leading-relaxed">{dpo.riskReason}</p>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ─── Audit summary panel ──────────────────────────────────────────────────────
@@ -453,6 +568,11 @@ export default function ScanDetail() {
               </div>
             </div>
           </div>
+
+          {/* DPO plain-English summary */}
+          {auditSummary?.dpoSummary && (
+            <DPOSummaryPanel dpo={auditSummary.dpoSummary} />
+          )}
 
           {/* Audit summary */}
           {auditSummary && <AuditSummaryPanel summary={auditSummary} />}
