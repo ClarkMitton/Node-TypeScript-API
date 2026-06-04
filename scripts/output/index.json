@@ -1,0 +1,67 @@
+{
+  "repo": "expressjs__serve-static",
+  "scannedAt": "2026-06-04T09:17:49.856Z",
+  "findings": [
+    {
+      "type": "backend-express",
+      "category": "external-transfer",
+      "file": "README.md",
+      "line": 186,
+      "evidence": "const express = require('express')",
+      "riskScore": 8
+    },
+    {
+      "type": "backend-express",
+      "category": "external-transfer",
+      "file": "README.md",
+      "line": 202,
+      "evidence": "const express = require('express')",
+      "riskScore": 8
+    },
+    {
+      "type": "backend-express",
+      "category": "external-transfer",
+      "file": "README.md",
+      "line": 220,
+      "evidence": "const express = require('express')",
+      "riskScore": 8
+    },
+    {
+      "type": "env-file",
+      "category": "identity",
+      "file": "scripts/version-history.js",
+      "line": 8,
+      "evidence": "var VERSION = process.env.npm_package_version",
+      "riskScore": 8
+    },
+    {
+      "type": "db-insert",
+      "category": "persistence",
+      "line": 47,
+      "evidence": "var opts = Object.create(options || null)",
+      "riskScore": 15,
+      "file": "index.js"
+    },
+    {
+      "type": "fs-write",
+      "category": "persistence",
+      "line": 35,
+      "evidence": "fs.writeFileSync(HISTORY_FILE_PATH, historyFileLines.join('\\n'))",
+      "riskScore": 15,
+      "file": "scripts/version-history.js"
+    }
+  ],
+  "dependencies": [],
+  "summary": {
+    "gdprScore": 50,
+    "riskLevel": "MEDIUM",
+    "totalFindings": 6,
+    "breakdown": {
+      "externalTransfer": 20,
+      "persistence": 15,
+      "identity": 15,
+      "logging": 0,
+      "dependencies": 0
+    }
+  }
+}

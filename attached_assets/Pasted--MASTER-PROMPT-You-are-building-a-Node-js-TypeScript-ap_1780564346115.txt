@@ -1,0 +1,200 @@
+🚀 MASTER PROMPT
+
+You are building a Node.js + TypeScript application called GDPR Repo Intelligence Scanner.
+
+The system takes a GitHub repository URL, clones it locally, and performs a hybrid analysis using:
+
+Static file scanning
+Dependency analysis (package.json)
+AST-based code analysis (TypeScript/JavaScript)
+
+The goal is to detect GDPR-relevant behaviours in code and produce:
+
+a structured risk report
+a searchable query system over findings
+📦 Core Features
+1. Repo ingestion
+Accept a GitHub URL input
+Clone repository using simple-git
+Store repo in /repos/{repo-name}
+2. Static file scanner
+
+Scan all files for patterns:
+
+data storage indicators:
+jsonl, db, sqlite, localStorage, indexedDB
+backend indicators:
+express, hono, fastify
+logging indicators:
+console.log, logger.info
+config indicators:
+.env, API keys
+
+Output findings with:
+
+file path
+matched keyword
+category
+3. Dependency analysis
+
+Read package.json and classify dependencies:
+
+Categories:
+AI/LLM providers (openai, anthropic, etc.)
+Analytics (segment, mixpanel, ga)
+Backend/data (prisma, supabase, firebase)
+logging (winston, pino)
+auth (auth0, next-auth, clerk)
+
+Output structured list of:
+
+dependency name
+category
+GDPR relevance score
+4. AST analysis engine (critical)
+
+Parse .ts, .js, .tsx, .jsx files using @babel/parser and @babel/traverse.
+
+Detect:
+
+A. External data transfer
+fetch()
+axios.*
+websocket connections
+any URL usage in network calls
+B. Data persistence
+fs.writeFile / appendFile
+localStorage.setItem
+database inserts (prisma, sql queries)
+C. Identity signals
+userId, sessionId, email, name fields
+auth-related functions
+D. Logging of sensitive data
+console.log of request bodies or user objects
+
+Each finding must include:
+
+file
+line number
+AST node type
+extracted evidence snippet
+5. GDPR Rule Engine
+
+Create a scoring system:
+
+Risk weights:
+External API call: +20
+Persistent storage: +15
+Identity handling: +15
+Logging user data: +10
+Analytics tools: +10
+Auth system: +10
+Mitigations:
+No external calls: -10
+No identity system: -10
+No persistence: -10
+
+Compute:
+
+total GDPR risk score (0–100)
+risk level:
+LOW (0–30)
+MEDIUM (31–60)
+HIGH (61–100)
+6. Indexing system (IMPORTANT)
+
+Store all findings in a structured JSON file:
+
+/output/index.json
+
+Schema:
+
+{
+repo: string,
+findings: [
+{
+type: string,
+category: string,
+file: string,
+line?: number,
+evidence: string,
+riskScore: number
+}
+],
+summary: {
+gdprScore: number,
+riskLevel: string
+}
+}
+
+7. Query engine (key feature)
+
+Build a simple in-memory query system:
+
+Expose functions:
+
+getAllFindings()
+
+Returns all findings
+
+queryFindings(filter)
+
+Supports queries like:
+
+"external"
+"storage"
+"logging"
+"identity"
+"high risk"
+getFindingsByFile(filePath)
+
+Returns all findings for a file
+
+getGDPRSummary()
+
+Returns final score + breakdown
+
+8. CLI interface
+
+Create a CLI tool:
+
+node scan.js <github-url>
+
+It should:
+
+clone repo
+run all analysis layers
+generate index.json
+print summary report
+🧠 Output requirements
+
+Print:
+
+repo name
+total findings count
+GDPR score
+risk level
+top 10 risks (sorted by severity)
+🧱 Tech constraints
+
+Use:
+
+Node.js
+TypeScript
+@babel/parser
+@babel/traverse
+simple-git
+fs/promises
+
+Do NOT use external paid APIs.
+
+🎯 Goal
+
+This tool should behave like a static GDPR analysis engine for GitHub repositories, capable of identifying:
+
+personal data handling
+external data transfer
+storage patterns
+logging risks
+
+and exposing them through a structured queryable dataset.
