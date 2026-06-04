@@ -6,7 +6,7 @@ import { RiskBadge } from "@/components/risk-badge";
 import { ScoreGauge } from "@/components/score-gauge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Loader2, Trash2, Github, AlertCircle, CheckCircle2, ShieldAlert, ArrowRight, Info, FileText, Bot, Send, User, ClipboardList, AlertTriangle } from "lucide-react";
+import { ArrowLeft, Loader2, Trash2, Github, AlertCircle, CheckCircle2, ShieldAlert, ArrowRight, Info, FileText, Bot, Send, User, ClipboardList, AlertTriangle, Plus, X, ChevronDown, ChevronUp, Shield } from "lucide-react";
 import { Link } from "wouter";
 
 // ─── Local types for new fields ───────────────────────────────────────────────
@@ -87,6 +87,44 @@ type AuditSummary = {
   nonFindings: string[];
   dpoSummary?: DPOSummary;
 };
+
+type MitigationType =
+  | "DPIA_COMPLETED"
+  | "CONSENT_ADDED"
+  | "DPA_IN_PLACE"
+  | "DELETION_MECHANISM"
+  | "PSEUDONYMISATION"
+  | "ACCESS_RESTRICTED"
+  | "OTHER";
+
+type Mitigation = {
+  id: number;
+  scanId: number;
+  flowKey: string;
+  type: MitigationType;
+  description: string;
+  createdAt: string;
+};
+
+const MITIGATION_LABELS: Record<MitigationType, string> = {
+  DPIA_COMPLETED:     "DPIA completed",
+  CONSENT_ADDED:      "User consent added",
+  DPA_IN_PLACE:       "Data Processing Agreement in place",
+  DELETION_MECHANISM: "Right to erasure implemented",
+  PSEUDONYMISATION:   "Data pseudonymised",
+  ACCESS_RESTRICTED:  "Access controls added",
+  OTHER:              "Other mitigation",
+};
+
+const MITIGATION_OPTIONS: { value: MitigationType; label: string; hint: string; reduction: number }[] = [
+  { value: "DPIA_COMPLETED",     label: "DPIA completed",                       hint: "A formal Data Protection Impact Assessment has been completed for this flow",   reduction: 60 },
+  { value: "CONSENT_ADDED",      label: "User consent added",                   hint: "Users explicitly agree before their data is collected or stored",               reduction: 50 },
+  { value: "PSEUDONYMISATION",   label: "Data pseudonymised",                   hint: "Personal identifiers are replaced with anonymous codes before storage",         reduction: 50 },
+  { value: "DPA_IN_PLACE",       label: "Data Processing Agreement in place",   hint: "A legal DPA with the data processor (e.g. Supabase) exists and is signed",     reduction: 40 },
+  { value: "DELETION_MECHANISM", label: "Right to erasure implemented",         hint: "Users can request deletion of their personal data from within the app",         reduction: 30 },
+  { value: "ACCESS_RESTRICTED",  label: "Access controls added",                hint: "Only authorised staff can access this data (role-based access, row security)",  reduction: 25 },
+  { value: "OTHER",              label: "Other mitigation",                     hint: "Describe another control or safeguard you have applied",                        reduction: 20 },
+];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -330,22 +368,76 @@ function AuditSummaryPanel({ summary }: { summary: AuditSummary }) {
 
 // ─── Audit card ───────────────────────────────────────────────────────────────
 
-function AuditCardPanel({ card }: { card: AuditCard }) {
+interface AuditCardPanelProps {
+  card: AuditCard;
+  scanId: number;
+  mitigations: Mitigation[];
+  onRefresh: () => void;
+}
+
+function AuditCardPanel({ card, scanId, mitigations = [], onRefresh }: AuditCardPanelProps) {
+  const flowKey = `${card.evidence.file}:${card.evidence.line}`;
   const riskColor = RISK_COLORS[card.riskLevel] ?? "#8b949e";
+  const isMitigated = mitigations.length > 0;
+
+  const [formOpen, setFormOpen] = useState(false);
+  const [selType, setSelType] = useState<MitigationType>("DPIA_COMPLETED");
+  const [description, setDescription] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState<number | null>(null);
+
+  const selectedOption = MITIGATION_OPTIONS.find((o) => o.value === selType);
+
+  async function saveMitigation() {
+    if (!description.trim() || saving) return;
+    setSaving(true);
+    try {
+      const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+      await fetch(`${base}/api/scans/${scanId}/mitigations`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ flowKey, type: selType, description: description.trim() }),
+      });
+      setDescription("");
+      setFormOpen(false);
+      onRefresh();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteMitigation(id: number) {
+    setDeleting(id);
+    try {
+      const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+      await fetch(`${base}/api/scans/${scanId}/mitigations/${id}`, { method: "DELETE" });
+      onRefresh();
+    } finally {
+      setDeleting(null);
+    }
+  }
+
+  const borderColor = isMitigated ? "border-[#3fb950]/40" : "border-[#21262d]";
 
   return (
-    <div className="bg-[#161b22] border border-[#21262d] rounded-lg overflow-hidden">
+    <div className={`bg-[#161b22] border rounded-lg overflow-hidden ${borderColor}`}>
       {/* Header */}
       <div className="px-4 py-3 border-b border-[#21262d] flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 min-w-0">
-          <ShieldAlert className="h-3.5 w-3.5 shrink-0" style={{ color: riskColor }} />
+          {isMitigated
+            ? <Shield className="h-3.5 w-3.5 shrink-0 text-[#3fb950]" />
+            : <ShieldAlert className="h-3.5 w-3.5 shrink-0" style={{ color: riskColor }} />
+          }
           <span className="text-sm font-medium text-[#e6edf3] truncate">{card.title}</span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <span className="text-[10px] text-[#484f58]">
-            {confidencePct(card.confidence)} conf.
-          </span>
-          <span className="text-[10px] font-medium uppercase" style={{ color: riskColor }}>
+          {isMitigated && (
+            <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-[#1a2d1a] text-[#3fb950] border border-[#3fb950]/30">
+              MITIGATED
+            </span>
+          )}
+          <span className="text-[10px] text-[#484f58]">{confidencePct(card.confidence)} conf.</span>
+          <span className="text-[10px] font-medium uppercase" style={{ color: isMitigated ? "#3fb950" : riskColor }}>
             {card.riskLevel}
           </span>
         </div>
@@ -356,12 +448,8 @@ function AuditCardPanel({ card }: { card: AuditCard }) {
         <div className="flex items-center gap-2 font-mono text-xs flex-wrap">
           {card.flow.split(" → ").map((part, i, arr) => (
             <span key={i} className="flex items-center gap-2">
-              <span className="px-2 py-0.5 rounded bg-[#161b22] text-[#c9d1d9] border border-[#30363d]">
-                {part}
-              </span>
-              {i < arr.length - 1 && (
-                <ArrowRight className="h-3 w-3 text-[#484f58]" />
-              )}
+              <span className="px-2 py-0.5 rounded bg-[#161b22] text-[#c9d1d9] border border-[#30363d]">{part}</span>
+              {i < arr.length - 1 && <ArrowRight className="h-3 w-3 text-[#484f58]" />}
             </span>
           ))}
         </div>
@@ -370,9 +458,7 @@ function AuditCardPanel({ card }: { card: AuditCard }) {
       {/* Evidence */}
       <div className="px-4 py-3 border-b border-[#21262d]">
         <p className="text-[10px] text-[#484f58] uppercase tracking-widest mb-1.5">Evidence</p>
-        <p className="text-xs text-[#6e7681] font-mono mb-1">
-          {card.evidence.file}:{card.evidence.line}
-        </p>
+        <p className="text-xs text-[#6e7681] font-mono mb-1">{card.evidence.file}:{card.evidence.line}</p>
         <p className="text-xs font-mono bg-[#0d1117] text-[#e6edf3] px-3 py-2 rounded border border-[#21262d] truncate">
           {card.evidence.code}
         </p>
@@ -408,6 +494,115 @@ function AuditCardPanel({ card }: { card: AuditCard }) {
             ))}
           </ul>
         </div>
+      </div>
+
+      {/* ── Mitigations section ── */}
+      <div className="border-t border-[#21262d]">
+        {/* Existing mitigations */}
+        {isMitigated && (
+          <div className="px-4 py-3 space-y-2 border-b border-[#21262d]">
+            <p className="text-[10px] text-[#3fb950] uppercase tracking-widest font-medium mb-2">
+              Controls applied — reduces risk score
+            </p>
+            {mitigations.map((m) => (
+              <div key={m.id} className="flex items-start gap-2 bg-[#1a2d1a] border border-[#3fb950]/20 rounded px-3 py-2">
+                <CheckCircle2 className="h-3.5 w-3.5 text-[#3fb950] shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-[10px] font-bold text-[#3fb950] uppercase tracking-wider">
+                    {MITIGATION_LABELS[m.type]}
+                  </p>
+                  <p className="text-xs text-[#8b949e] mt-0.5 leading-relaxed">{m.description}</p>
+                </div>
+                <button
+                  onClick={() => void deleteMitigation(m.id)}
+                  disabled={deleting === m.id}
+                  className="shrink-0 text-[#484f58] hover:text-[#f97583] transition-colors"
+                  title="Remove this mitigation"
+                >
+                  {deleting === m.id
+                    ? <Loader2 className="h-3 w-3 animate-spin" />
+                    : <X className="h-3 w-3" />
+                  }
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Add mitigation button / form */}
+        {!formOpen ? (
+          <button
+            onClick={() => setFormOpen(true)}
+            className="w-full flex items-center gap-2 px-4 py-2.5 text-xs text-[#484f58] hover:text-[#3fb950] hover:bg-[#1a2d1a]/50 transition-colors group"
+          >
+            <Plus className="h-3.5 w-3.5 group-hover:text-[#3fb950]" />
+            <span>How will you reduce this risk?</span>
+            <ChevronDown className="h-3 w-3 ml-auto" />
+          </button>
+        ) : (
+          <div className="px-4 py-3 bg-[#0d1117] space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs font-medium text-[#e6edf3]">Add a control or safeguard</p>
+              <button onClick={() => { setFormOpen(false); setDescription(""); }} className="text-[#484f58] hover:text-[#c9d1d9]">
+                <ChevronUp className="h-3.5 w-3.5" />
+              </button>
+            </div>
+
+            {/* Type selector */}
+            <div className="space-y-1">
+              <label className="text-[10px] text-[#484f58] uppercase tracking-widest">Type of control</label>
+              <select
+                value={selType}
+                onChange={(e) => setSelType(e.target.value as MitigationType)}
+                className="w-full bg-[#161b22] border border-[#30363d] text-[#c9d1d9] text-xs rounded px-2 py-1.5 focus:outline-none focus:border-[#58a6ff]"
+              >
+                {MITIGATION_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label} (−{o.reduction}% risk)
+                  </option>
+                ))}
+              </select>
+              {selectedOption && (
+                <p className="text-[10px] text-[#484f58] leading-relaxed">{selectedOption.hint}</p>
+              )}
+            </div>
+
+            {/* Description */}
+            <div className="space-y-1">
+              <label className="text-[10px] text-[#484f58] uppercase tracking-widest">
+                Details — what specifically have you done?
+              </label>
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="e.g. DPIA completed on 1 June 2026, stored in our compliance folder. Reviewed by DPO."
+                rows={3}
+                className="w-full resize-none bg-[#161b22] border border-[#30363d] text-xs text-[#c9d1d9] rounded px-3 py-2 placeholder:text-[#484f58] focus:outline-none focus:border-[#3fb950]"
+              />
+            </div>
+
+            {/* Actions */}
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                onClick={() => void saveMitigation()}
+                disabled={!description.trim() || saving}
+                className="bg-[#1a4d1a] hover:bg-[#2d6b2d] border border-[#3fb950]/40 text-[#3fb950] text-xs h-7 px-3"
+              >
+                {saving ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <CheckCircle2 className="h-3 w-3 mr-1" />}
+                Save control
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => { setFormOpen(false); setDescription(""); }}
+                className="text-[#484f58] hover:text-[#c9d1d9] text-xs h-7 px-3"
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -688,6 +883,9 @@ export default function ScanDetail() {
     verifiedFlows?: VerifiedFlow[];
     auditCards?: AuditCard[];
     auditSummary?: AuditSummary;
+    mitigations?: Mitigation[];
+    mitigatedScore?: number;
+    mitigatedRiskLevel?: string;
   }) | undefined;
 
   const deleteScan = useDeleteScan();
@@ -737,7 +935,17 @@ export default function ScanDetail() {
   const verifiedFlows = scan.verifiedFlows ?? [];
   const auditCards = scan.auditCards ?? [];
   const auditSummary = scan.auditSummary ?? null;
+  const mitigations = scan.mitigations ?? [];
+  const mitigatedScore = scan.mitigatedScore ?? scan.gdprScore ?? 0;
+  const mitigatedRiskLevel = scan.mitigatedRiskLevel ?? scan.riskLevel ?? "LOW";
+  const hasMitigations = mitigations.length > 0;
+  const scoreReduced = hasMitigations && mitigatedScore < (scan.gdprScore ?? 0);
   const isPending = scan.status === "pending" || scan.status === "running";
+
+  function getMitigationsForCard(card: AuditCard): Mitigation[] {
+    const key = `${card.evidence.file}:${card.evidence.line}`;
+    return mitigations.filter((m) => m.flowKey === key);
+  }
 
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-6">
@@ -804,19 +1012,46 @@ export default function ScanDetail() {
         <>
           {/* Score + metadata */}
           <div className="bg-[#161b22] border border-[#21262d] rounded-lg p-5 flex flex-col sm:flex-row items-center gap-6">
-            <ScoreGauge score={scan.gdprScore ?? 0} />
+            {/* Gauge — shows mitigated score when reduced */}
+            <div className="relative shrink-0">
+              <ScoreGauge score={scoreReduced ? mitigatedScore : (scan.gdprScore ?? 0)} />
+              {scoreReduced && (
+                <div className="absolute -bottom-1 left-1/2 -translate-x-1/2 text-[9px] text-[#3fb950] font-medium whitespace-nowrap">
+                  mitigated
+                </div>
+              )}
+            </div>
             <div className="flex-1 grid grid-cols-2 gap-4">
               <div>
                 <p className="text-xs text-[#484f58] uppercase tracking-widest">Risk Level</p>
-                <div className="mt-1.5">
-                  <RiskBadge level={scan.riskLevel} />
+                <div className="mt-1.5 flex items-center gap-2">
+                  <RiskBadge level={scoreReduced ? mitigatedRiskLevel : scan.riskLevel} />
+                  {scoreReduced && scan.riskLevel !== mitigatedRiskLevel && (
+                    <span className="text-[10px] text-[#484f58] line-through">{scan.riskLevel}</span>
+                  )}
+                </div>
+              </div>
+              <div>
+                <p className="text-xs text-[#484f58] uppercase tracking-widest">Risk Score</p>
+                <div className="flex items-baseline gap-2 mt-1">
+                  <p className="text-lg font-semibold" style={{ color: scoreReduced ? "#3fb950" : (scan.gdprScore ?? 0) >= 50 ? "#f97583" : "#e3b341" }}>
+                    {scoreReduced ? mitigatedScore : (scan.gdprScore ?? 0)}
+                  </p>
+                  {scoreReduced && (
+                    <p className="text-sm text-[#484f58] line-through">{scan.gdprScore}</p>
+                  )}
                 </div>
               </div>
               <div>
                 <p className="text-xs text-[#484f58] uppercase tracking-widest">Verified Flows</p>
-                <p className="text-lg font-semibold mt-1" style={{ color: verifiedFlows.length > 0 ? "#f97583" : "#3fb950" }}>
-                  {verifiedFlows.length}
-                </p>
+                <div className="flex items-baseline gap-1.5 mt-1">
+                  <p className="text-lg font-semibold" style={{ color: verifiedFlows.length > 0 ? "#f97583" : "#3fb950" }}>
+                    {verifiedFlows.length}
+                  </p>
+                  {hasMitigations && (
+                    <p className="text-[10px] text-[#3fb950]">{mitigations.length} control{mitigations.length > 1 ? "s" : ""} applied</p>
+                  )}
+                </div>
               </div>
               <div>
                 <p className="text-xs text-[#484f58] uppercase tracking-widest">Scanned</p>
@@ -824,12 +1059,23 @@ export default function ScanDetail() {
                   {scan.completedAt ? new Date(scan.completedAt).toLocaleString() : "—"}
                 </p>
               </div>
-              <div>
-                <p className="text-xs text-[#484f58] uppercase tracking-widest">Dependencies</p>
-                <p className="text-lg font-semibold text-[#e6edf3] mt-1">{deps.length}</p>
-              </div>
             </div>
           </div>
+
+          {/* Mitigation progress banner */}
+          {scoreReduced && (
+            <div className="bg-[#1a2d1a] border border-[#3fb950]/30 rounded-lg px-5 py-3 flex items-center gap-3">
+              <Shield className="h-4 w-4 text-[#3fb950] shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-[#3fb950]">
+                  Risk reduced by controls — score {scan.gdprScore} → {mitigatedScore}
+                </p>
+                <p className="text-xs text-[#3fb950]/70 mt-0.5">
+                  {mitigations.length} control{mitigations.length > 1 ? "s" : ""} applied across {new Set(mitigations.map((m) => m.flowKey)).size} flow{new Set(mitigations.map((m) => m.flowKey)).size > 1 ? "s" : ""}. Add more controls to individual flows below to reduce the score further.
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* DPO plain-English summary */}
           {auditSummary?.dpoSummary && (
@@ -842,11 +1088,22 @@ export default function ScanDetail() {
           {/* Verified flow audit cards */}
           {auditCards.length > 0 && (
             <div className="space-y-4">
-              <h3 className="text-xs text-[#8b949e] uppercase tracking-widest font-medium px-1">
-                Verified Data Flows ({auditCards.length})
-              </h3>
+              <div className="flex items-center justify-between px-1">
+                <h3 className="text-xs text-[#8b949e] uppercase tracking-widest font-medium">
+                  Verified Data Flows ({auditCards.length})
+                </h3>
+                <p className="text-[10px] text-[#484f58]">
+                  Click "How will you reduce this risk?" on each flow to add controls
+                </p>
+              </div>
               {auditCards.map((card, i) => (
-                <AuditCardPanel key={i} card={card} />
+                <AuditCardPanel
+                  key={i}
+                  card={card}
+                  scanId={id}
+                  mitigations={getMitigationsForCard(card)}
+                  onRefresh={() => void refetch()}
+                />
               ))}
             </div>
           )}
