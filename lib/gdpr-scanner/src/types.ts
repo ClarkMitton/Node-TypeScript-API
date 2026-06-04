@@ -6,7 +6,20 @@ export type RiskCategory =
   | "dependency"
   | "static";
 
-export type RiskLevel = "LOW" | "MEDIUM" | "HIGH";
+export type RiskLevel = "LOW" | "MEDIUM" | "HIGH" | "INSUFFICIENT_EVIDENCE";
+
+export type DataType = "IDENTIFIABLE" | "BEHAVIOURAL" | "TECHNICAL" | "UNKNOWN";
+
+export type RiskTag =
+  | "USER_DATA_STORAGE"
+  | "USER_DATA_TRANSFER"
+  | "IDENTIFIABLE_DATA_LOGGING"
+  | "BEHAVIOURAL_TRACKING"
+  | "ANALYTICS_USAGE"
+  | "POTENTIAL_IDENTIFIABLE_DATA"
+  | "NO_USER_DATA_FOUND"
+  | "INTERNAL_ONLY_PROCESSING"
+  | "STATIC_CODE_ONLY";
 
 export interface Finding {
   type: string;
@@ -15,6 +28,50 @@ export interface Finding {
   line?: number;
   evidence: string;
   riskScore: number;
+  confidence?: number;
+  tags?: RiskTag[];
+  isVerifiedFlow?: boolean;
+  flowDescription?: string;
+}
+
+export interface VerifiedFlow {
+  source: string;
+  sink: string;
+  file: string;
+  line: number;
+  evidence: string;
+  dataType: DataType;
+  confidence: number;
+  tags: RiskTag[];
+}
+
+export interface AuditCard {
+  title: string;
+  riskLevel: RiskLevel;
+  confidence: number;
+  flow: string;
+  evidence: {
+    file: string;
+    line: number;
+    code: string;
+  };
+  whyItMatters: string;
+  whyThisWasFlagged: string[];
+  whatIsNOTTrue: string[];
+  tags: RiskTag[];
+}
+
+export interface AuditSummary {
+  repo: string;
+  overallRisk: RiskLevel;
+  confidence: number;
+  verifiedFlowCount: number;
+  externalTransferCount: number;
+  storageCount: number;
+  loggingCount: number;
+  potentialPatternCount: number;
+  conclusion: string;
+  nonFindings: string[];
 }
 
 export interface DependencyFinding {
@@ -28,6 +85,9 @@ export interface RepoIndex {
   scannedAt: string;
   findings: Finding[];
   dependencies: DependencyFinding[];
+  verifiedFlows: VerifiedFlow[];
+  auditCards: AuditCard[];
+  auditSummary: AuditSummary;
   summary: {
     gdprScore: number;
     riskLevel: RiskLevel;

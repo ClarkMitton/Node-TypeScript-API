@@ -3,6 +3,15 @@ import path from "path";
 import { glob } from "glob";
 import type { Finding, RiskCategory } from "./types.js";
 
+/**
+ * Static scanner — regex-based pass over non-JS/TS files.
+ *
+ * IMPORTANT: Only patterns that indicate genuine data-storage capability
+ * are included. Framework presence (Express, React, etc.) is NOT flagged
+ * here — that is a capability marker, not a GDPR risk. The AST flow
+ * matcher handles verified data flows in code files.
+ */
+
 interface PatternRule {
   pattern: RegExp;
   keyword: string;
@@ -12,21 +21,29 @@ interface PatternRule {
 }
 
 const PATTERNS: PatternRule[] = [
-  { pattern: /\.jsonl\b/gi, keyword: ".jsonl", category: "persistence", riskScore: 10, type: "file-extension-jsonl" },
-  { pattern: /\.db\b|\.sqlite\b/gi, keyword: ".db/.sqlite", category: "persistence", riskScore: 12, type: "file-extension-db" },
-  { pattern: /\blocalStorage\b/g, keyword: "localStorage", category: "persistence", riskScore: 15, type: "local-storage" },
-  { pattern: /\bindexedDB\b/g, keyword: "indexedDB", category: "persistence", riskScore: 15, type: "indexed-db" },
-  { pattern: /\brequire\s*\(\s*['"]express['"]\s*\)/g, keyword: "express", category: "external-transfer", riskScore: 8, type: "backend-express" },
-  { pattern: /\brequire\s*\(\s*['"]hono['"]\s*\)|from\s+['"]hono['"]/g, keyword: "hono", category: "external-transfer", riskScore: 8, type: "backend-hono" },
-  { pattern: /\brequire\s*\(\s*['"]fastify['"]\s*\)|from\s+['"]fastify['"]/g, keyword: "fastify", category: "external-transfer", riskScore: 8, type: "backend-fastify" },
-  { pattern: /\bconsole\.log\b/g, keyword: "console.log", category: "logging", riskScore: 5, type: "console-log" },
-  { pattern: /\blogger\.info\b|\blogger\.warn\b|\blogger\.error\b/g, keyword: "logger.*", category: "logging", riskScore: 7, type: "structured-logging" },
-  { pattern: /\.env\b/g, keyword: ".env", category: "identity", riskScore: 8, type: "env-file" },
-  { pattern: /API_KEY\s*=|API_KEY\s*:/g, keyword: "API_KEY", category: "identity", riskScore: 10, type: "api-key-config" },
-  { pattern: /SECRET\s*=|SECRET\s*:/g, keyword: "SECRET", category: "identity", riskScore: 10, type: "secret-config" },
+  // Client-side storage (genuine personal data risk — often unaudited)
+  { pattern: /\blocalStorage\b/g, keyword: "localStorage", category: "persistence", riskScore: 12, type: "local-storage" },
+  { pattern: /\bindexedDB\b/g, keyword: "indexedDB", category: "persistence", riskScore: 12, type: "indexed-db" },
+  { pattern: /\bsessionStorage\b/g, keyword: "sessionStorage", category: "persistence", riskScore: 10, type: "session-storage" },
+  // SQLite / embedded DB files (stored on device, retention risk)
+  { pattern: /\.db\b|\.sqlite\b/gi, keyword: ".db/.sqlite", category: "persistence", riskScore: 10, type: "file-extension-db" },
+  // Analytics scripts embedded in non-JS files (HTML, config)
+  { pattern: /gtag\s*\(|ga\s*\(|fbq\s*\(/g, keyword: "analytics-pixel", category: "external-transfer", riskScore: 12, type: "analytics-pixel" },
+  // WebSocket connections mentioned in config / docs
+  { pattern: /wss?:\/\//g, keyword: "websocket-url", category: "external-transfer", riskScore: 8, type: "websocket-url" },
 ];
 
 const SKIP_DIRS = ["node_modules", ".git", "dist", "build", ".next", "coverage", "__pycache__"];
+
+// Only scan non-JS/TS files here; code files are handled by the AST analyzer
+const SKIP_EXTS = new Set([
+  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+  ".map", ".lock", ".sum", ".mod",
+  ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
+  ".woff", ".woff2", ".ttf", ".eot",
+  ".zip", ".gz", ".tar",
+  ".pdf", ".docx", ".xlsx",
+]);
 
 export async function runStaticScanner(repoPath: string): Promise<Finding[]> {
   const findings: Finding[] = [];
@@ -38,7 +55,9 @@ export async function runStaticScanner(repoPath: string): Promise<Finding[]> {
     absolute: false,
   });
 
-  for (const relFile of files) {
+  const nonCodeFiles = files.filter((f) => !SKIP_EXTS.has(path.extname(f).toLowerCase()));
+
+  for (const relFile of nonCodeFiles) {
     const absFile = path.join(repoPath, relFile);
     let content: string;
     try {
@@ -49,24 +68,29 @@ export async function runStaticScanner(repoPath: string): Promise<Finding[]> {
 
     for (const rule of PATTERNS) {
       rule.pattern.lastIndex = 0;
-      const matches = content.match(rule.pattern);
-      if (matches) {
-        const lines = content.split("\n");
-        for (let i = 0; i < lines.length; i++) {
-          rule.pattern.lastIndex = 0;
-          if (rule.pattern.test(lines[i]!)) {
-            findings.push({
-              type: rule.type,
-              category: rule.category,
-              file: relFile,
-              line: i + 1,
-              evidence: lines[i]!.trim().slice(0, 120),
-              riskScore: rule.riskScore,
-            });
-          }
-        }
+      if (!rule.pattern.test(content)) {
+        rule.pattern.lastIndex = 0;
+        continue;
       }
       rule.pattern.lastIndex = 0;
+
+      const lines = content.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        rule.pattern.lastIndex = 0;
+        if (rule.pattern.test(lines[i]!)) {
+          findings.push({
+            type: rule.type,
+            category: rule.category,
+            file: relFile,
+            line: i + 1,
+            evidence: lines[i]!.trim().slice(0, 120),
+            riskScore: rule.riskScore,
+            confidence: 0.4, // static patterns are capability markers, not verified flows
+            isVerifiedFlow: false,
+          });
+        }
+        rule.pattern.lastIndex = 0;
+      }
     }
   }
 

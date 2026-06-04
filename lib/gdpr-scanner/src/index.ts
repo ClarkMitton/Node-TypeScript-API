@@ -10,13 +10,23 @@ import { runStaticScanner } from "./static-scanner.js";
 import { analyzeDependencies } from "./dependency-analyzer.js";
 import { runASTAnalyzer } from "./ast-analyzer.js";
 import { buildRepoIndex } from "./gdpr-rule-engine.js";
-import type { RepoIndex, ScanProgress } from "./types.js";
+import type { RepoIndex, ScanProgress, VerifiedFlow, Finding } from "./types.js";
 import path from "path";
 
-function deduplicateFindings(findings: ReturnType<typeof Array.prototype.filter>) {
+function deduplicateFindings(findings: Finding[]): Finding[] {
   const seen = new Set<string>();
-  return findings.filter((f: { file: string; line?: number; type: string }) => {
+  return findings.filter((f) => {
     const key = `${f.file}:${f.line ?? 0}:${f.type}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function deduplicateFlows(flows: VerifiedFlow[]): VerifiedFlow[] {
+  const seen = new Set<string>();
+  return flows.filter((f) => {
+    const key = `${f.source}→${f.sink}:${f.file}:${f.line}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -37,18 +47,20 @@ export async function runFullScan(
   const staticFindings = await runStaticScanner(repoPath);
 
   onProgress?.({ stage: "deps", message: "Analyzing dependencies…" });
-  const [deps, astFindings] = await Promise.all([
+  const [deps, astResult] = await Promise.all([
     analyzeDependencies(repoPath),
     (async () => {
-      onProgress?.({ stage: "ast", message: "Running AST analysis…" });
+      onProgress?.({ stage: "ast", message: "Running AST flow analysis…" });
       return runASTAnalyzer(repoPath);
     })(),
   ]);
 
   onProgress?.({ stage: "scoring", message: "Computing GDPR risk score…" });
-  const allFindings = deduplicateFindings([...staticFindings, ...astFindings]);
+
+  const allFindings = deduplicateFindings([...staticFindings, ...astResult.findings]);
+  const allVerifiedFlows = deduplicateFlows(astResult.verifiedFlows);
   const repoName = extractRepoName(githubUrl);
-  const index = buildRepoIndex(repoName, allFindings, deps);
+  const index = buildRepoIndex(repoName, allFindings, deps, allVerifiedFlows);
 
   onProgress?.({ stage: "done", message: "Scan complete." });
   return index;

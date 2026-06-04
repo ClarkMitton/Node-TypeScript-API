@@ -139,6 +139,9 @@ router.post("/scans", async (req, res): Promise<void> => {
           breakdown: index.summary.breakdown,
           findings: index.findings as unknown as Record<string, unknown>[],
           dependencies: index.dependencies as unknown as Record<string, unknown>[],
+          verifiedFlows: index.verifiedFlows as unknown as Record<string, unknown>[],
+          auditCards: index.auditCards as unknown as Record<string, unknown>[],
+          auditSummary: index.auditSummary as unknown as Record<string, unknown>,
           completedAt: new Date(),
         })
         .where(eq(scans.id, scan!.id));
@@ -173,23 +176,28 @@ router.get("/scans/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  res.json(
-    GetScanResponse.parse({
-      id: scan.id,
-      githubUrl: scan.githubUrl,
-      repoName: scan.repoName,
-      status: scan.status,
-      gdprScore: scan.gdprScore,
-      riskLevel: scan.riskLevel,
-      totalFindings: scan.totalFindings,
-      breakdown: scan.breakdown,
-      error: scan.error,
-      createdAt: scan.createdAt.toISOString(),
-      completedAt: scan.completedAt?.toISOString() ?? null,
-      findings: (scan.findings as unknown[]) ?? [],
-      dependencies: (scan.dependencies as unknown[]) ?? [],
-    }),
-  );
+  const base = GetScanResponse.parse({
+    id: scan.id,
+    githubUrl: scan.githubUrl,
+    repoName: scan.repoName,
+    status: scan.status,
+    gdprScore: scan.gdprScore,
+    riskLevel: scan.riskLevel,
+    totalFindings: scan.totalFindings,
+    breakdown: scan.breakdown,
+    error: scan.error,
+    createdAt: scan.createdAt.toISOString(),
+    completedAt: scan.completedAt?.toISOString() ?? null,
+    findings: (scan.findings as unknown[]) ?? [],
+    dependencies: (scan.dependencies as unknown[]) ?? [],
+  });
+
+  res.json({
+    ...base,
+    verifiedFlows: (scan.verifiedFlows as unknown[]) ?? [],
+    auditCards: (scan.auditCards as unknown[]) ?? [],
+    auditSummary: scan.auditSummary ?? null,
+  });
 });
 
 router.delete("/scans/:id", async (req, res): Promise<void> => {
