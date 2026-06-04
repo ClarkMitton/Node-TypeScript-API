@@ -1,0 +1,258 @@
+@import url('https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@300;400;500;600;700&family=Merriweather:wght@400;700&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Libre+Caslon+Text:wght@400;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Bradford College brand palette */
+    --background: 220 20% 97%;
+    --foreground: 220 25% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 220 25% 12%;
+
+    --popover: 220 15% 92%;
+    --popover-foreground: 220 25% 12%;
+
+    /* Bradford magenta primary */
+    --primary: 338 82% 44%;
+    --primary-foreground: 0 0% 100%;
+    --primary-hover: 338 75% 38%;
+
+    /* Dark navy secondary */
+    --secondary: 220 30% 20%;
+    --secondary-foreground: 0 0% 98%;
+
+    /* Muted tones */
+    --muted: 220 15% 70%;
+    --muted-foreground: 220 20% 35%;
+
+    /* Teal accent */
+    --accent: 174 60% 92%;
+    --accent-foreground: 174 65% 32%;
+    --accent-soft: 174 40% 94%;
+
+    /* Status colors */
+    --destructive: 0 72% 50%;
+    --destructive-foreground: 0 85% 97%;
+    --success: 164 55% 38%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+
+    --border: 220 15% 88%;
+    --input: 220 15% 88%;
+    --ring: 338 82% 44%;
+
+    --radius: 1.25rem;
+
+    /* Highlight for names in transcript */
+    --highlight: 338 60% 80%;
+    --highlight-hover: 338 60% 70%;
+
+    /* Step indicator colors */
+    --step-complete: 164 55% 38%;
+    --step-active: 338 82% 44%;
+    --step-pending: 220 15% 85%;
+
+    /* Shadows */
+    --shadow-sm: 0 2px 8px 0px hsl(220 30% 20% / 0.06);
+    --shadow-md: 0 4px 16px 0px hsl(220 30% 20% / 0.08);
+    --shadow-lg: 0 8px 24px 0px hsl(220 30% 20% / 0.1);
+    --shadow-glow: 0 0 24px hsl(338 82% 44% / 0.2);
+
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 220 25% 12%;
+    --sidebar-primary: 338 82% 44%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 174 65% 32%;
+    --sidebar-accent-foreground: 0 0% 100%;
+    --sidebar-border: 220 15% 88%;
+    --sidebar-ring: 338 82% 44%;
+    --chart-1: 338 82% 44%;
+    --chart-2: 174 60% 45%;
+    --chart-3: 220 30% 20%;
+    --chart-4: 38 92% 50%;
+    --chart-5: 280 50% 50%;
+    --sidebar: 0 0% 100%;
+    --font-sans: 'Roboto', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, 'Noto Sans', sans-serif;
+    --font-serif: 'Libre Caslon Text', ui-serif, Georgia, Cambria, 'Times New Roman', Times, serif;
+    --font-mono: 'Roboto Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+    --shadow-2xs: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
+    --shadow-xs: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
+    --shadow: 0 2px 8px 0px hsl(220 30% 20% / 0.08);
+    --shadow-xl: 0 12px 32px 0px hsl(220 30% 20% / 0.12);
+    --shadow-2xl: 0 16px 48px 0px hsl(220 30% 20% / 0.16);
+    --tracking-normal: 0em;
+    --spacing: 0.25rem;
+  }
+
+  .dark {
+    --background: 220 25% 8%;
+    --foreground: 220 10% 95%;
+
+    --card: 220 25% 13%;
+    --card-foreground: 220 10% 95%;
+
+    --popover: 220 25% 16%;
+    --popover-foreground: 220 10% 95%;
+
+    --primary: 338 75% 55%;
+    --primary-foreground: 0 0% 100%;
+    --primary-hover: 338 70% 48%;
+
+    --secondary: 220 20% 30%;
+    --secondary-foreground: 0 0% 98%;
+
+    --muted: 220 15% 30%;
+    --muted-foreground: 220 10% 80%;
+
+    --accent: 174 40% 15%;
+    --accent-foreground: 174 55% 60%;
+    --accent-soft: 174 30% 12%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 85% 97%;
+    --success: 164 45% 45%;
+    --success-foreground: 0 0% 100%;
+
+    --border: 220 20% 22%;
+    --input: 220 20% 22%;
+    --ring: 338 75% 55%;
+
+    --highlight: 338 60% 35%;
+    --highlight-hover: 338 60% 45%;
+
+    --step-complete: 164 45% 45%;
+    --step-active: 338 75% 55%;
+    --step-pending: 220 15% 30%;
+
+    --sidebar-background: 220 25% 10%;
+    --sidebar-foreground: 220 10% 95%;
+    --sidebar-primary: 338 75% 55%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 174 55% 60%;
+    --sidebar-accent-foreground: 220 25% 10%;
+    --sidebar-border: 220 20% 22%;
+    --sidebar-ring: 338 75% 55%;
+    --chart-1: 338 75% 55%;
+    --chart-2: 174 55% 50%;
+    --chart-3: 220 20% 60%;
+    --chart-4: 38 80% 55%;
+    --chart-5: 280 45% 55%;
+    --sidebar: 220 25% 13%;
+    --shadow-2xs: 0 1px 3px 0px hsl(0 0% 0% / 0.1);
+    --shadow-xs: 0 1px 3px 0px hsl(0 0% 0% / 0.1);
+    --shadow-sm: 0 2px 8px 0px hsl(0 0% 0% / 0.15);
+    --shadow: 0 2px 8px 0px hsl(0 0% 0% / 0.15);
+    --shadow-md: 0 4px 16px 0px hsl(0 0% 0% / 0.2);
+    --shadow-lg: 0 8px 24px 0px hsl(0 0% 0% / 0.25);
+    --shadow-xl: 0 12px 32px 0px hsl(0 0% 0% / 0.3);
+    --shadow-2xl: 0 16px 48px 0px hsl(0 0% 0% / 0.35);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-heading font-semibold tracking-tight;
+  }
+}
+
+@layer components {
+  .step-indicator {
+    @apply flex items-center justify-center w-10 h-10 rounded-full text-sm font-semibold transition-all duration-300;
+  }
+
+  .step-complete {
+    @apply bg-success text-success-foreground;
+  }
+
+  .step-active {
+    @apply bg-primary text-primary-foreground shadow-glow;
+  }
+
+  .step-pending {
+    @apply bg-step-pending text-muted-foreground;
+  }
+
+  .highlight-name {
+    @apply bg-highlight text-foreground px-1 py-0.5 rounded cursor-pointer transition-colors hover:bg-highlight-hover;
+  }
+
+  .card-elevated {
+    @apply bg-card rounded-3xl border border-border shadow-md transition-all duration-300 hover:shadow-lg;
+  }
+
+  .btn-primary {
+    @apply bg-primary text-primary-foreground hover:bg-primary-hover transition-colors;
+  }
+
+  .btn-accent {
+    @apply bg-accent text-accent-foreground hover:opacity-90 transition-opacity;
+  }
+
+  .section-fade-in {
+    animation: fadeInUp 0.5s ease-out forwards;
+  }
+
+  @keyframes fadeInUp {
+    from {
+      opacity: 0;
+      transform: translateY(20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .pulse-recording {
+    animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.5;
+    }
+  }
+
+  /* Evidence highlighting styles for timestamps and quotes */
+  .timestamp-badge {
+    @apply inline-flex items-center bg-primary/15 text-primary px-3 py-0.5 rounded-full text-sm font-medium mx-0.5;
+  }
+
+  .quote-text {
+    @apply italic text-muted-foreground;
+  }
+
+  .evidence-text .timestamp-badge {
+    @apply bg-primary/15 text-primary;
+  }
+
+  .evidence-text .quote-text {
+    @apply not-italic border-l-2 border-primary/30 pl-2 ml-1;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}

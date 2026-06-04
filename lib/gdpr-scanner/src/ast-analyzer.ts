@@ -10,15 +10,16 @@ const CODE_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
 // ─── Internal types ────────────────────────────────────────────────────────────
 
 interface SourceRef {
-  expr: string;      // e.g. "req.body.email"
+  expr: string;      // e.g. "req.body.email" or "e.target.value" or "field_evidence:email"
   field: string;     // e.g. "email" — last property name (empty = unspecified)
   varName: string;   // variable it was assigned to, or ""
   dataType: DataType;
   line: number;
+  kind: "server" | "client-dom" | "field-evidence";
 }
 
 interface SinkRef {
-  name: string;      // e.g. "fs.writeFile"
+  name: string;      // e.g. "fs.writeFile" or "supabase.insert"
   category: RiskCategory;
   argStr: string;    // all arguments stringified for matching
   line: number;
@@ -45,9 +46,18 @@ type ASTNode = Record<string, unknown> & {
 
 // ─── Data classification ───────────────────────────────────────────────────────
 
-const IDENTIFIABLE_FIELDS = /^(email|emailAddress|name|firstName|lastName|fullName|userId|user_id|username|phoneNumber|phone|address|ip|ipAddress|ssn|passport|dob|birthDate|nationalId|taxId)$/i;
+const IDENTIFIABLE_FIELDS = /^(email|emailAddress|name|firstName|lastName|fullName|userId|user_id|username|phoneNumber|phone|address|ip|ipAddress|ssn|passport|dob|birthDate|nationalId|taxId|studentId|student_id|uniqueId|unique_id|teacherId|teacher_id)$/i;
 const BEHAVIOURAL_FIELDS = /^(click|pageview|session|duration|score|confidence|preferences|behaviour|behavior|event|impression)$/i;
 const TECHNICAL_FIELDS = /^(token|apiKey|secret|config|metadata|headers|hash|signature)$/i;
+
+// Also used for field-evidence matching (needs to be an array)
+const IDENTIFIABLE_FIELD_LIST = [
+  "email", "emailAddress", "name", "firstName", "lastName", "fullName",
+  "userId", "user_id", "username", "phoneNumber", "phone", "address",
+  "ip", "ipAddress", "ssn", "passport", "dob", "birthDate", "nationalId",
+  "taxId", "studentId", "student_id", "uniqueId", "unique_id",
+  "teacherId", "teacher_id",
+];
 
 function classifyField(field: string): DataType {
   if (!field) return "UNKNOWN";
@@ -59,17 +69,23 @@ function classifyField(field: string): DataType {
 
 // ─── Source / sink detection ───────────────────────────────────────────────────
 
+// Server-side sources: req.body.X, req.params.X, req.query.X
 const REQUEST_SOURCE_PATTERNS = /^(req|request)\.(body|params|query|files|file)/;
 
-function isRequestSource(memberChain: string): boolean {
-  return REQUEST_SOURCE_PATTERNS.test(memberChain);
+// Client-side sources: e.target.value, event.target.files, onChange handlers
+const CLIENT_SOURCE_PATTERNS = /\w+\.target\.(value|files|checked)$/;
+
+function isRequestSource(chain: string): boolean {
+  return REQUEST_SOURCE_PATTERNS.test(chain);
+}
+
+function isClientDOMSource(chain: string): boolean {
+  return CLIENT_SOURCE_PATTERNS.test(chain);
 }
 
 function extractField(memberChain: string): string {
-  // e.g. "req.body.email" → "email"
-  // e.g. "req.body" → "" (unspecified)
   const parts = memberChain.split(".");
-  if (parts.length <= 2) return ""; // just "req.body"
+  if (parts.length <= 2) return "";
   return parts[parts.length - 1] ?? "";
 }
 
@@ -133,6 +149,79 @@ function nodeToStr(node: ASTNode | undefined): string {
   return "";
 }
 
+/**
+ * Walk a node tree (including through CallExpressions) to check whether any
+ * Identifier or property name matches `name`.  Used to detect whether a
+ * chained call like `supabase.from("x").insert(…)` involves a known client
+ * like "supabase" or "firebase".
+ */
+function chainContains(node: ASTNode | undefined, name: string): boolean {
+  if (!node) return false;
+  if (node.type === "Identifier") return ((node.name as string) ?? "") === name;
+  if (node.type === "MemberExpression") {
+    const propName = ((node.property as ASTNode)?.name as string) ?? "";
+    return propName === name || chainContains(node.object as ASTNode, name);
+  }
+  if (node.type === "CallExpression") {
+    return chainContains(node.callee as ASTNode, name);
+  }
+  return false;
+}
+
+// ─── Supabase / Firebase chained-call sink detection ──────────────────────────
+
+const SUPABASE_CLIENTS = ["supabase", "supabaseAdmin", "supabaseClient", "client"];
+const FIREBASE_CLIENTS = ["firebase", "firestore", "db", "database"];
+const ALL_DB_CLIENTS = [...SUPABASE_CLIENTS, ...FIREBASE_CLIENTS];
+
+function detectClientSink(
+  callNode: ASTNode,
+  argStr: string,
+  line: number,
+  lineText: string,
+): SinkRef | null {
+  const callee = callNode.callee as ASTNode | undefined;
+  if (!callee || callee.type !== "MemberExpression") return null;
+
+  const methodName = ((callee.property as ASTNode)?.name as string) ?? "";
+  const obj = callee.object as ASTNode | undefined;
+
+  // Supabase / Firebase DB writes: .insert(), .upsert(), .update()
+  if (["insert", "upsert", "update"].includes(methodName)) {
+    const isDbClient = ALL_DB_CLIENTS.some((c) => chainContains(obj, c));
+    if (isDbClient) {
+      return { name: `supabase.${methodName}`, category: "persistence", argStr, line, evidence: lineText };
+    }
+  }
+
+  // Supabase storage upload: supabase.storage.from("bucket").upload(path, file)
+  if (methodName === "upload") {
+    const hasStorage = chainContains(obj, "storage") || chainContains(obj, "supabase");
+    const hasFrom = chainContains(obj, "from");
+    if (hasStorage && hasFrom) {
+      return { name: "supabase.storage.upload", category: "persistence", argStr, line, evidence: lineText };
+    }
+  }
+
+  // Supabase Edge Functions: supabase.functions.invoke("fn", {body: {...}})
+  if (methodName === "invoke") {
+    const hasFunctions = chainContains(obj, "functions") || chainContains(obj, "supabase");
+    if (hasFunctions) {
+      return { name: "supabase.functions.invoke", category: "external-transfer", argStr, line, evidence: lineText };
+    }
+  }
+
+  // Firebase / Firestore writes: .add(), .set()
+  if (["add", "set"].includes(methodName)) {
+    const isFirebase = FIREBASE_CLIENTS.some((c) => chainContains(obj, c));
+    if (isFirebase) {
+      return { name: `firebase.${methodName}`, category: "persistence", argStr, line, evidence: lineText };
+    }
+  }
+
+  return null;
+}
+
 // ─── Scope-level source/sink collection ───────────────────────────────────────
 
 interface ScopeAccumulator {
@@ -157,43 +246,41 @@ function shallowWalkScope(node: ASTNode, acc: ScopeAccumulator, lines: string[],
   if (!node || typeof node !== "object") return;
 
   const nodeType = (node.type as string) ?? "";
-
-  // Stop descending into a nested function body — it gets its own scope pass
   if (isNested && isFunctionLike(nodeType)) return;
 
   const line = node.loc?.start?.line ?? 0;
   const lineText = line > 0 ? (lines[line - 1] ?? "").trim().slice(0, 120) : "";
 
-  // ── Source detection: req.body.X, req.params.X, req.query.X ──
+  // ── Source: req.body.X, req.params.X, req.query.X (server-side) ──
   if (nodeType === "MemberExpression") {
     const chain = memberChain(node);
     if (isRequestSource(chain)) {
       const field = extractField(chain);
       acc.sources.push({
-        expr: chain,
-        field,
-        varName: "",
-        dataType: classifyField(field),
-        line,
+        expr: chain, field, varName: "", dataType: classifyField(field), line, kind: "server",
+      });
+    }
+    // ── Source: e.target.value, event.target.files (client-side DOM) ──
+    if (isClientDOMSource(chain)) {
+      const isFile = chain.endsWith(".files");
+      acc.sources.push({
+        expr: chain, field: "", varName: "", dataType: isFile ? "UNKNOWN" : "UNKNOWN", line, kind: "client-dom",
       });
     }
   }
 
-  // ── Variable assignment from source: const email = req.body.email ──
+  // ── Variable assignment from server/client source ──
   if (nodeType === "VariableDeclarator") {
     const id = node.id as ASTNode | undefined;
     const init = node.init as ASTNode | undefined;
     if (id?.type === "Identifier" && init) {
       const chain = memberChain(init);
-      if (isRequestSource(chain)) {
+      if (isRequestSource(chain) || isClientDOMSource(chain)) {
         const varName = (id.name as string) ?? "";
         const field = extractField(chain);
         const src: SourceRef = {
-          expr: chain,
-          field,
-          varName,
-          dataType: classifyField(field),
-          line,
+          expr: chain, field, varName, dataType: classifyField(field), line,
+          kind: isRequestSource(chain) ? "server" : "client-dom",
         };
         acc.sources.push(src);
         if (varName) acc.varSources.set(varName, src);
@@ -201,13 +288,13 @@ function shallowWalkScope(node: ASTNode, acc: ScopeAccumulator, lines: string[],
     }
   }
 
-  // ── Object destructuring from source: const { email } = req.body ──
+  // ── Destructuring from server/client source ──
   if (nodeType === "VariableDeclarator") {
     const id = node.id as ASTNode | undefined;
     const init = node.init as ASTNode | undefined;
     if (id?.type === "ObjectPattern" && init) {
       const chain = memberChain(init);
-      if (isRequestSource(chain)) {
+      if (isRequestSource(chain) || isClientDOMSource(chain)) {
         const props = (id.properties as ASTNode[] | undefined) ?? [];
         for (const prop of props) {
           const key = prop.key as ASTNode | undefined;
@@ -215,11 +302,9 @@ function shallowWalkScope(node: ASTNode, acc: ScopeAccumulator, lines: string[],
           const fieldName = (key?.name as string) ?? (key?.value as string) ?? "";
           const varName = varId?.type === "Identifier" ? ((varId.name as string) ?? "") : "";
           const src: SourceRef = {
-            expr: `${chain}.${fieldName}`,
-            field: fieldName,
-            varName,
-            dataType: classifyField(fieldName),
-            line,
+            expr: `${chain}.${fieldName}`, field: fieldName, varName,
+            dataType: classifyField(fieldName), line,
+            kind: isRequestSource(chain) ? "server" : "client-dom",
           };
           acc.sources.push(src);
           if (varName) acc.varSources.set(varName, src);
@@ -235,6 +320,7 @@ function shallowWalkScope(node: ASTNode, acc: ScopeAccumulator, lines: string[],
     const args = (node.arguments as ASTNode[] | undefined) ?? [];
     const argStr = args.map((a) => nodeToStr(a as ASTNode)).join(" ");
 
+    // --- Server-side sinks ---
     if (/fs\.(writeFile|appendFile|writeFileSync|appendFileSync)\b/.test(callStr)) {
       acc.sinks.push({ name: callStr, category: "persistence", argStr, line, evidence: lineText });
     } else if (/\b(\.insert|\.insertMany|\.create|\.upsert|\.save|\.set)\b/.test(callStr) && !/Object\.create/.test(callStr)) {
@@ -249,6 +335,10 @@ function shallowWalkScope(node: ASTNode, acc: ScopeAccumulator, lines: string[],
       acc.sinks.push({ name: callStr, category: "logging", argStr, line, evidence: lineText });
     } else if (/logger\.(info|warn|error|debug)\b/.test(callStr)) {
       acc.sinks.push({ name: callStr, category: "logging", argStr, line, evidence: lineText });
+    } else {
+      // --- Client-side sinks (Supabase/Firebase chained calls) ---
+      const clientSink = detectClientSink(node, argStr, line, lineText);
+      if (clientSink) acc.sinks.push(clientSink);
     }
   }
 
@@ -270,53 +360,129 @@ function shallowWalkScope(node: ASTNode, acc: ScopeAccumulator, lines: string[],
 
 // ─── Flow matching ─────────────────────────────────────────────────────────────
 
+/**
+ * For a Supabase/Firebase DB write, check if any identifiable field name
+ * appears as an object key in the arguments.  Returns the first matching
+ * field name, or null.
+ *
+ * This handles: supabase.from("t").insert({ name, email, student_id })
+ * where no DOM source was traced but the field names prove personal data
+ * is being stored.
+ */
+function findIdentifiableFieldInArgs(argStr: string): string | null {
+  for (const field of IDENTIFIABLE_FIELD_LIST) {
+    // Match as object key: "field " or "field:" or standalone word
+    if (new RegExp(`\\b${field}\\b`, "i").test(argStr)) {
+      return field;
+    }
+  }
+  return null;
+}
+
 function matchFlows(acc: ScopeAccumulator, file: string): VerifiedFlow[] {
   const flows: VerifiedFlow[] = [];
-  if (acc.sources.length === 0 || acc.sinks.length === 0) return flows;
-
   const seen = new Set<string>();
 
-  for (const source of acc.sources) {
-    for (const sink of acc.sinks) {
-      // Build candidate match strings from source
-      const matchTokens: string[] = [];
-      if (source.field) matchTokens.push(source.field);
-      if (source.varName) matchTokens.push(source.varName);
-      if (source.expr) matchTokens.push(source.expr);
+  // ── Pass A: direct source → sink matching ──────────────────────────────────
+  if (acc.sources.length > 0 && acc.sinks.length > 0) {
+    for (const source of acc.sources) {
+      for (const sink of acc.sinks) {
+        const matchTokens: string[] = [];
+        if (source.field) matchTokens.push(source.field);
+        if (source.varName) matchTokens.push(source.varName);
+        if (source.expr) matchTokens.push(source.expr);
 
-      // Check if any token appears in the sink arguments
-      const directConnection = matchTokens.some(
-        (token) => token.length > 1 && sink.argStr.includes(token),
-      );
+        const directConnection = matchTokens.some(
+          (token) => token.length > 1 && sink.argStr.includes(token),
+        );
 
-      // Also accept if source is "req.body" (unspecified) and sink's argStr
-      // contains "req.body" or "body" — common pass-through pattern
-      const bodyPassthrough =
-        source.expr.endsWith(".body") &&
-        (sink.argStr.includes("req.body") ||
-          sink.argStr.includes("request.body") ||
-          sink.argStr.includes("body"));
+        // req.body pass-through (no specific field)
+        const bodyPassthrough =
+          source.expr.endsWith(".body") &&
+          (sink.argStr.includes("req.body") ||
+            sink.argStr.includes("request.body") ||
+            sink.argStr.includes("body"));
 
-      if (!directConnection && !bodyPassthrough) continue;
+        // client-dom source in same scope as DB/transfer sink — lower confidence
+        const clientDomToSink =
+          source.kind === "client-dom" &&
+          (sink.category === "persistence" || sink.category === "external-transfer");
 
-      const confidence = directConnection ? 0.85 : 0.6;
-      const dedupeKey = `${source.expr}→${sink.name}:${file}:${sink.line}`;
-      if (seen.has(dedupeKey)) continue;
-      seen.add(dedupeKey);
+        if (!directConnection && !bodyPassthrough && !clientDomToSink) continue;
 
-      const tags = tagsForFlow(sink.category, source.dataType);
+        const confidence = directConnection ? 0.85
+          : bodyPassthrough ? 0.6
+          : 0.55; // client-dom in same scope without direct token match
 
-      flows.push({
-        source: source.expr,
-        sink: sink.name,
-        file,
-        line: sink.line,
-        evidence: sink.evidence,
-        dataType: source.dataType,
-        confidence,
-        tags,
-      });
+        const dedupeKey = `${source.expr}→${sink.name}:${file}:${sink.line}`;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+
+        const tags = tagsForFlow(sink.category, source.dataType);
+        flows.push({
+          source: source.expr,
+          sink: sink.name,
+          file,
+          line: sink.line,
+          evidence: sink.evidence,
+          dataType: source.dataType,
+          confidence,
+          tags,
+        });
+      }
     }
+  }
+
+  // ── Pass B: field-name evidence in Supabase/Firebase DB writes ─────────────
+  // Even without a traced source, an identifiable field name as an object key
+  // in a DB write is factual evidence that personal data is stored.
+  const DB_WRITE_SINKS = ["supabase.insert", "supabase.upsert", "firebase.add", "firebase.set"];
+  for (const sink of acc.sinks) {
+    if (!DB_WRITE_SINKS.includes(sink.name)) continue;
+
+    const matchedField = findIdentifiableFieldInArgs(sink.argStr);
+    if (!matchedField) continue;
+
+    const dedupeKey = `field_evidence:${matchedField}→${sink.name}:${file}:${sink.line}`;
+    if (seen.has(dedupeKey)) continue;
+
+    // Skip if we already have a higher-confidence direct-source flow for this sink+line
+    const alreadyCovered = flows.some(
+      (f) => f.sink === sink.name && f.file === file && f.line === sink.line,
+    );
+    if (alreadyCovered) continue;
+
+    seen.add(dedupeKey);
+
+    flows.push({
+      source: `field_evidence:${matchedField}`,
+      sink: sink.name,
+      file,
+      line: sink.line,
+      evidence: sink.evidence,
+      dataType: "IDENTIFIABLE",
+      confidence: 0.70,
+      tags: ["USER_DATA_STORAGE", "POTENTIAL_IDENTIFIABLE_DATA"],
+    });
+  }
+
+  // ── Pass C: file/media upload to Supabase storage ──────────────────────────
+  for (const sink of acc.sinks) {
+    if (sink.name !== "supabase.storage.upload") continue;
+    const dedupeKey = `file_upload→${sink.name}:${file}:${sink.line}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    flows.push({
+      source: "file_upload",
+      sink: sink.name,
+      file,
+      line: sink.line,
+      evidence: sink.evidence,
+      dataType: "UNKNOWN",
+      confidence: 0.65,
+      tags: ["USER_DATA_STORAGE"],
+    });
   }
 
   return flows;
@@ -324,10 +490,6 @@ function matchFlows(acc: ScopeAccumulator, file: string): VerifiedFlow[] {
 
 // ─── Top-level function walker ─────────────────────────────────────────────────
 
-/**
- * Walk the AST and yield every function-like node (without descending into
- * nested function bodies — callers handle those separately).
- */
 function* yieldFunctionNodes(node: ASTNode): Generator<ASTNode> {
   if (!node || typeof node !== "object") return;
   const nodeType = (node.type as string) ?? "";
@@ -382,15 +544,16 @@ function analyzeSource(source: string, relFile: string): FileAnalysis {
     const flows = matchFlows(acc, relFile);
     verifiedFlows.push(...flows);
 
-    // Convert verified flows to findings (for backwards-compat scoring)
     for (const flow of flows) {
-      findings.push({
-        type: `verified-flow:${flow.sink}`,
-        category: flow.sink.includes("fetch") || flow.sink.includes("axios")
+      const category: RiskCategory =
+        flow.sink.includes("fetch") || flow.sink.includes("axios") || flow.sink.includes("invoke")
           ? "external-transfer"
           : flow.sink.includes("log") || flow.sink.includes("logger")
           ? "logging"
-          : "persistence",
+          : "persistence";
+      findings.push({
+        type: `verified-flow:${flow.sink}`,
+        category,
         line: flow.line,
         evidence: flow.evidence,
         riskScore: flow.confidence >= 0.8 ? 25 : 15,
@@ -398,7 +561,7 @@ function analyzeSource(source: string, relFile: string): FileAnalysis {
     }
   }
 
-  // ── Pass 2: sensitive-data-in-logs (still useful without full flow chain) ──
+  // ── Pass 2: sensitive-data-in-logs ──
   walkForSensitiveLogs(ast as unknown as ASTNode, lines, findings);
 
   return { findings, verifiedFlows };
@@ -413,7 +576,6 @@ function walkForSensitiveLogs(node: ASTNode, lines: string[], findings: Internal
     if (/console\.(log|warn|error|info)|logger\.(info|warn|error|debug)/.test(callStr)) {
       const args = (node.arguments as ASTNode[] | undefined) ?? [];
       const argStr = args.map((a) => nodeToStr(a as ASTNode)).join(" ");
-      // Only flag if it contains identifiable field names or req.body references
       if (/req\.body|req\.params|req\.query|email|userId|user_id|password|token|session/.test(argStr)) {
         const line = node.loc?.start?.line ?? 0;
         const lineText = line > 0 ? (lines[line - 1] ?? "").trim().slice(0, 120) : "";

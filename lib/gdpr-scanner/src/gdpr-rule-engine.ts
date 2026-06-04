@@ -81,17 +81,27 @@ function whyItMatters(flow: VerifiedFlow): string {
 }
 
 function whyFlagged(flow: VerifiedFlow): string[] {
-  const reasons: string[] = [
-    `User input source detected: \`${flow.source}\``,
-    `Data sink detected: \`${flow.sink}\``,
-  ];
-  if (flow.confidence >= 0.8) {
-    reasons.push("Direct data flow confirmed — source identifier found in sink arguments");
+  const reasons: string[] = [];
+
+  if (flow.source.startsWith("field_evidence:")) {
+    const field = flow.source.replace("field_evidence:", "");
+    reasons.push(`Identifiable field name \`${field}\` found as an object key in the database write call`);
+    reasons.push("The field name is direct evidence that personal data is stored in this table");
+  } else if (flow.source === "file_upload") {
+    reasons.push("File or media content uploaded to cloud storage");
+    reasons.push("Media files may contain biometric or personal data (faces, voices, names)");
   } else {
-    reasons.push("Likely data flow — source and sink co-located in same function scope");
+    reasons.push(`User input source detected: \`${flow.source}\``);
+    reasons.push(`Data sink detected: \`${flow.sink}\``);
+    if (flow.confidence >= 0.8) {
+      reasons.push("Direct data flow confirmed — source identifier found in sink arguments");
+    } else {
+      reasons.push("Likely data flow — source and sink co-located in same function scope");
+    }
   }
+
   if (flow.dataType === "IDENTIFIABLE") {
-    reasons.push("Field classified as IDENTIFIABLE (email / userId / name / phone / address)");
+    reasons.push("Data classified as IDENTIFIABLE (email / name / userId / phone / address)");
   }
   return reasons;
 }
@@ -134,6 +144,13 @@ function buildAuditCards(flows: VerifiedFlow[]): AuditCard[] {
 // ─── DPO plain-English summary ─────────────────────────────────────────────────
 
 function sourceLabel(source: string): string {
+  if (source.startsWith("field_evidence:")) {
+    const field = source.replace("field_evidence:", "");
+    return `a database field named "${field}" (personal data stored directly)`;
+  }
+  if (source === "file_upload") return "a file or media upload";
+  if (source.includes(".target.files")) return "a file input";
+  if (source.includes(".target.value")) return "a form input field";
   if (source.includes(".body")) return "a form submission or request body";
   if (source.includes(".params")) return "a URL parameter";
   if (source.includes(".query")) return "a URL query string";

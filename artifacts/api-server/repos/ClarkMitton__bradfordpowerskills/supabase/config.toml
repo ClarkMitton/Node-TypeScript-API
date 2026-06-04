@@ -1,0 +1,16 @@
+project_id = "vasojqwaaihnplrqkyly"
+
+[functions.analyze-session]
+verify_jwt = false
+
+[functions.transcribe-audio]
+verify_jwt = false
+
+[functions.analyze-video]
+verify_jwt = false
+
+[functions.start-video-analysis]
+verify_jwt = false
+
+[functions.video-analysis-status]
+verify_jwt = false
