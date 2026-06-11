@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { eq, desc, avg, count, and } from "drizzle-orm";
 import { db } from "@workspace/db";
-import { scans, flowMitigations } from "@workspace/db/schema";
+import { scans, flowMitigations, reviewAnswers } from "@workspace/db/schema";
 import {
   CreateScanBody,
   GetScanParams,
@@ -10,7 +10,13 @@ import {
   GetScanResponse,
   GetScanStatsResponse,
 } from "@workspace/api-zod";
-import { runFullScan } from "@workspace/gdpr-scanner";
+import {
+  runFullScan,
+  applyReviewAnswers,
+  type AuditCard,
+  type AuditSummary,
+  type ReviewAnswerInput,
+} from "@workspace/gdpr-scanner";
 import path from "path";
 import { logger } from "../lib/logger.js";
 import { z } from "zod";
@@ -324,15 +330,45 @@ router.get("/scans/:id", async (req, res): Promise<void> => {
   const allDeps = (scan.dependencies as Array<{ name: string; category: string; gdprRelevance: number }>) ?? [];
   const vibeChecks = buildVibeChecks(allDeps, allFindings);
 
+  // ── Review answers → recomputed (final) rating ────────────────────────────
+  const answerRows = await db
+    .select()
+    .from(reviewAnswers)
+    .where(eq(reviewAnswers.scanId, params.data.id));
+
+  const reviewAnswerList = answerRows.map((a) => ({
+    id: a.id,
+    flowKey: a.flowKey,
+    questionId: a.questionId,
+    answer: a.answer,
+    createdAt: a.createdAt.toISOString(),
+  }));
+
+  const auditCards = (scan.auditCards as AuditCard[] | null) ?? [];
+  const auditSummary = (scan.auditSummary as AuditSummary | null) ?? null;
+  const reviewOutcome = auditSummary
+    ? applyReviewAnswers(
+        auditCards,
+        auditSummary.dpiaScreening,
+        answerRows.map((a) => ({
+          flowKey: a.flowKey,
+          questionId: a.questionId,
+          answer: a.answer as ReviewAnswerInput["answer"],
+        })),
+      )
+    : null;
+
   res.json({
     ...base,
     verifiedFlows,
-    auditCards: (scan.auditCards as unknown[]) ?? [],
-    auditSummary: scan.auditSummary ?? null,
+    auditCards,
+    auditSummary,
     mitigations,
     mitigatedScore,
     mitigatedRiskLevel,
     vibeChecks,
+    reviewAnswers: reviewAnswerList,
+    reviewOutcome,
   });
 });
 
@@ -366,6 +402,44 @@ router.post("/scans/:id/mitigations", async (req, res): Promise<void> => {
     flowKey: row!.flowKey,
     type: row!.type,
     description: row!.description,
+    createdAt: row!.createdAt.toISOString(),
+  });
+});
+
+// ─── Record / update a review answer ─────────────────────────────────────────
+
+const AddReviewAnswerBody = z.object({
+  flowKey: z.string().min(1),       // "<file>:<line>" or "summary"
+  questionId: z.string().min(1),
+  answer: z.enum(["yes", "no", "unsure"]),
+});
+
+router.post("/scans/:id/review-answers", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const scanId = parseInt(raw!, 10);
+  if (isNaN(scanId)) { res.status(400).json({ error: "Invalid scan id" }); return; }
+
+  const parsed = AddReviewAnswerBody.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
+
+  const [scan] = await db.select({ id: scans.id }).from(scans).where(eq(scans.id, scanId));
+  if (!scan) { res.status(404).json({ error: "Scan not found" }); return; }
+
+  const [row] = await db
+    .insert(reviewAnswers)
+    .values({ scanId, flowKey: parsed.data.flowKey, questionId: parsed.data.questionId, answer: parsed.data.answer })
+    .onConflictDoUpdate({
+      target: [reviewAnswers.scanId, reviewAnswers.flowKey, reviewAnswers.questionId],
+      set: { answer: parsed.data.answer, createdAt: new Date() },
+    })
+    .returning();
+
+  res.status(201).json({
+    id: row!.id,
+    scanId: row!.scanId,
+    flowKey: row!.flowKey,
+    questionId: row!.questionId,
+    answer: row!.answer,
     createdAt: row!.createdAt.toISOString(),
   });
 });

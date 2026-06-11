@@ -2,7 +2,7 @@ import fs from "fs/promises";
 import path from "path";
 import { glob } from "glob";
 import * as parser from "@babel/parser";
-import type { Finding, RiskCategory, VerifiedFlow, DataType, RiskTag } from "./types.js";
+import type { Finding, RiskCategory, VerifiedFlow, DataType, RiskTag, AIProvider } from "./types.js";
 
 const SKIP_DIRS = ["node_modules", ".git", "dist", "build", ".next", "coverage"];
 const CODE_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
@@ -24,6 +24,8 @@ interface SinkRef {
   argStr: string;    // all arguments stringified for matching
   line: number;
   evidence: string;
+  isAI?: boolean;            // sink is an AI/LLM provider call or endpoint
+  aiProvider?: AIProvider;   // best-effort provider attribution
 }
 
 interface FileAnalysis {
@@ -67,6 +69,24 @@ function classifyField(field: string): DataType {
   return "UNKNOWN";
 }
 
+// ─── Sensitivity overlay (special-category & children's data) ──────────────────
+//
+// These map onto DPIA screening triggers: special-category data (GDPR Art. 9)
+// and processing of children's / vulnerable people's data both push a finding
+// toward "DPIA required". Detection is heuristic on field/key names — a match is
+// a strong prompt to review, not proof. Word-boundary matched against argStr.
+const SPECIAL_CATEGORY_HINTS =
+  /\b(health|medical|diagnosis|condition|disability|disabilities|sen\b|ehcp|allerg\w*|medication|nhs|patient|ethnic\w*|race|racial|religion|religious|faith|biometric|fingerprint|faceid|genetic|sexual\w*|orientation|gender|pregnan\w*|mentalhealth|wellbeing|safeguarding|criminal|offence|conviction)\b/i;
+const CHILDREN_HINTS =
+  /\b(child|children|pupil|pupils|student|students|minor|minors|under18|under_18|dob|dateofbirth|date_of_birth|birthdate|age|yeargroup|year_group|schoolyear|guardian|parent|parentemail|parent_email|nextofkin)\b/i;
+
+function sensitivityTags(text: string): RiskTag[] {
+  const tags: RiskTag[] = [];
+  if (SPECIAL_CATEGORY_HINTS.test(text)) tags.push("SPECIAL_CATEGORY_DATA");
+  if (CHILDREN_HINTS.test(text)) tags.push("CHILDREN_DATA");
+  return tags;
+}
+
 // ─── Source / sink detection ───────────────────────────────────────────────────
 
 // Server-side sources: req.body.X, req.params.X, req.query.X
@@ -89,7 +109,7 @@ function extractField(memberChain: string): string {
   return parts[parts.length - 1] ?? "";
 }
 
-function tagsForFlow(category: RiskCategory, dataType: DataType): RiskTag[] {
+function tagsForFlow(category: RiskCategory, dataType: DataType, isAI = false): RiskTag[] {
   const tags: RiskTag[] = [];
   if (category === "persistence") {
     tags.push("USER_DATA_STORAGE");
@@ -97,7 +117,57 @@ function tagsForFlow(category: RiskCategory, dataType: DataType): RiskTag[] {
   }
   if (category === "external-transfer") tags.push("USER_DATA_TRANSFER");
   if (category === "logging") tags.push("IDENTIFIABLE_DATA_LOGGING");
+  if (isAI) tags.push("AI_PROCESSING");
   return tags;
+}
+
+// ─── AI / LLM provider sink detection ──────────────────────────────────────────
+//
+// Sending user data to an LLM is the single most common GDPR-relevant flow in
+// the apps this tool is aimed at. It is also frequently MISSED by naive sink
+// matching: `openai.chat.completions.create(...)` would otherwise be caught by
+// the generic `.create` persistence rule and mislabelled as a database write.
+// AI detection therefore runs BEFORE the generic sink rules.
+
+// SDK call shapes, e.g. openai.chat.completions.create, anthropic.messages.create,
+// model.generateContent, openai.responses.create, *.createChatCompletion (legacy).
+const AI_METHOD_PATTERNS =
+  /\.(chat\.completions\.create|completions\.create|responses\.create|embeddings\.create|images\.(generate|create)|audio\.(transcriptions|translations|speech)\.create|messages\.create|generateContent(Stream)?|sendMessage(Stream)?|createChatCompletion|createCompletion)$/;
+
+// Generic chain/LLM invocation where the receiver clearly names an AI client.
+const AI_INVOKE_PATTERN = /\.(invoke|call|run|stream|predict|generate)$/;
+const AI_CLIENT_HINT =
+  /(openai|anthropic|claude|cohere|replicate|gemini|generativeai|genai|generativemodel|mistral|groq|together|huggingface|hf|elevenlabs|openrouter|\bllm\b|langchain|chatmodel|chatopenai)/i;
+
+// AI provider HTTP endpoints, matched inside fetch()/axios() arguments.
+const AI_ENDPOINT_PATTERN =
+  /(api\.openai\.com|api\.anthropic\.com|generativelanguage\.googleapis\.com|api\.cohere\.(ai|com)|api\.elevenlabs\.io|api\.replicate\.com|openrouter\.ai|api\.mistral\.ai|api\.groq\.com|api\.together\.(xyz|ai)|api-inference\.huggingface\.co)/i;
+
+function aiProviderFor(text: string): AIProvider {
+  if (/openai|chatgpt|gpt-|chatopenai/i.test(text)) return "OpenAI";
+  if (/anthropic|claude/i.test(text)) return "Anthropic";
+  if (/gemini|generativelanguage|generativeai|generativemodel|googleapis/i.test(text)) return "Google Gemini";
+  if (/cohere/i.test(text)) return "Cohere";
+  if (/replicate/i.test(text)) return "Replicate";
+  if (/mistral/i.test(text)) return "Mistral";
+  if (/groq/i.test(text)) return "Groq";
+  if (/huggingface|hf\b|api-inference/i.test(text)) return "Hugging Face";
+  if (/elevenlabs/i.test(text)) return "ElevenLabs";
+  if (/openrouter/i.test(text)) return "OpenRouter";
+  return "AI provider";
+}
+
+/**
+ * Returns provider attribution if `callStr`/`argStr` represent a call to an
+ * AI/LLM provider (SDK method, hinted invocation, or HTTP endpoint), else null.
+ */
+function detectAISink(callStr: string, argStr: string): AIProvider | null {
+  if (AI_METHOD_PATTERNS.test(callStr)) return aiProviderFor(callStr);
+  if (AI_INVOKE_PATTERN.test(callStr) && AI_CLIENT_HINT.test(callStr)) return aiProviderFor(callStr);
+  if (/^fetch$|^axios(\.\w+)?$/.test(callStr) && AI_ENDPOINT_PATTERN.test(argStr)) {
+    return aiProviderFor(argStr);
+  }
+  return null;
 }
 
 // ─── AST utilities ─────────────────────────────────────────────────────────────
@@ -320,8 +390,14 @@ function shallowWalkScope(node: ASTNode, acc: ScopeAccumulator, lines: string[],
     const args = (node.arguments as ASTNode[] | undefined) ?? [];
     const argStr = args.map((a) => nodeToStr(a as ASTNode)).join(" ");
 
+    // --- AI/LLM provider sinks (checked first: `.create` etc. would otherwise
+    //     be miscaught by the generic persistence rule below) ---
+    const aiProvider = detectAISink(callStr, argStr);
+    if (aiProvider) {
+      acc.sinks.push({ name: callStr || "ai-call", category: "external-transfer", argStr, line, evidence: lineText, isAI: true, aiProvider });
+    }
     // --- Server-side sinks ---
-    if (/fs\.(writeFile|appendFile|writeFileSync|appendFileSync)\b/.test(callStr)) {
+    else if (/fs\.(writeFile|appendFile|writeFileSync|appendFileSync)\b/.test(callStr)) {
       acc.sinks.push({ name: callStr, category: "persistence", argStr, line, evidence: lineText });
     } else if (/\b(\.insert|\.insertMany|\.create|\.upsert|\.save|\.set)\b/.test(callStr) && !/Object\.create/.test(callStr)) {
       acc.sinks.push({ name: callStr, category: "persistence", argStr, line, evidence: lineText });
@@ -418,7 +494,7 @@ function matchFlows(acc: ScopeAccumulator, file: string): VerifiedFlow[] {
         if (seen.has(dedupeKey)) continue;
         seen.add(dedupeKey);
 
-        const tags = tagsForFlow(sink.category, source.dataType);
+        const tags = tagsForFlow(sink.category, source.dataType, sink.isAI);
         flows.push({
           source: source.expr,
           sink: sink.name,
@@ -428,6 +504,11 @@ function matchFlows(acc: ScopeAccumulator, file: string): VerifiedFlow[] {
           dataType: source.dataType,
           confidence,
           tags,
+          isAI: sink.isAI,
+          aiProvider: sink.aiProvider,
+          // An AI sink whose payload we can't see still warrants a human check:
+          // we can't tell from code alone whether the prompt carries personal data.
+          needsReview: sink.isAI ? true : undefined,
         });
       }
     }
@@ -483,6 +564,55 @@ function matchFlows(acc: ScopeAccumulator, file: string): VerifiedFlow[] {
       confidence: 0.65,
       tags: ["USER_DATA_STORAGE"],
     });
+  }
+
+  // ── Pass D: AI/LLM provider calls in scopes that handle user input ──────────
+  // Prompts are usually assembled into intermediate variables, so a direct
+  // source→sink token match often fails. If an AI call sits in the same scope
+  // as a user-input source (or an identifiable field appears in its arguments),
+  // surface it as an AI flow that NEEDS REVIEW — we can confirm the call exists
+  // and that user data is nearby, but not what the prompt actually contains.
+  for (const sink of acc.sinks) {
+    if (!sink.isAI) continue;
+
+    const alreadyCovered = flows.some(
+      (f) => f.file === file && f.line === sink.line && f.tags.includes("AI_PROCESSING"),
+    );
+    if (alreadyCovered) continue;
+
+    const idField = findIdentifiableFieldInArgs(sink.argStr);
+    const scopeSource = acc.sources[0];
+    if (!idField && !scopeSource) continue; // bare AI call with no nearby user data → capability only
+
+    const dedupeKey = `ai→${sink.name}:${file}:${sink.line}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    flows.push({
+      source: idField ? `field_evidence:${idField}` : (scopeSource?.expr ?? "user input"),
+      sink: sink.name,
+      file,
+      line: sink.line,
+      evidence: sink.evidence,
+      dataType: idField ? "IDENTIFIABLE" : (scopeSource?.dataType ?? "UNKNOWN"),
+      confidence: 0.5,
+      tags: tagsForFlow("external-transfer", idField ? "IDENTIFIABLE" : "UNKNOWN", true),
+      isAI: true,
+      aiProvider: sink.aiProvider,
+      needsReview: true,
+    });
+  }
+
+  // ── Sensitivity overlay ─────────────────────────────────────────────────────
+  // Tag flows whose payload looks like special-category (Art. 9) or children's /
+  // vulnerable-people's data — both are DPIA escalators. Heuristic on field/key
+  // names found in the source expression, the evidence line, and call arguments.
+  for (const flow of flows) {
+    const sink = acc.sinks.find((s) => s.line === flow.line && s.name === flow.sink);
+    const haystack = `${flow.source} ${flow.evidence} ${sink?.argStr ?? ""}`;
+    for (const t of sensitivityTags(haystack)) {
+      if (!flow.tags.includes(t)) flow.tags.push(t);
+    }
   }
 
   return flows;
@@ -546,7 +676,7 @@ function analyzeSource(source: string, relFile: string): FileAnalysis {
 
     for (const flow of flows) {
       const category: RiskCategory =
-        flow.sink.includes("fetch") || flow.sink.includes("axios") || flow.sink.includes("invoke")
+        flow.isAI || flow.sink.includes("fetch") || flow.sink.includes("axios") || flow.sink.includes("invoke")
           ? "external-transfer"
           : flow.sink.includes("log") || flow.sink.includes("logger")
           ? "logging"

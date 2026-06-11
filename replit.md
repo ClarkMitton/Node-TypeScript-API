@@ -1,6 +1,6 @@
 # GDPR Repo Intelligence Scanner
 
-A Node.js + TypeScript CLI tool that clones GitHub repositories and performs hybrid static + AST analysis to detect GDPR-relevant behaviours, score risk, and expose findings through a queryable dataset.
+A Node.js + TypeScript tool that clones GitHub repositories and performs hybrid static + AST analysis to detect GDPR-relevant behaviours, score risk, flag AI/LLM data flows, and tell the user whether a DPIA is likely needed. There is **one** scanner engine — `@workspace/gdpr-scanner` (`lib/gdpr-scanner`) — used by both the CLI (`scripts/`) and the web app/API (`artifacts/api-server` + `artifacts/gdpr-ui`).
 
 ## Run & Operate
 
@@ -29,34 +29,36 @@ Set `GITHUB_TOKEN` to scan private repositories (public repos work without it).
 
 ## Where things live
 
-- `scripts/src/scan.ts` — CLI entry point (`node scan.js <github-url>`)
-- `scripts/src/gdpr/types.ts` — shared TypeScript types (`Finding`, `RepoIndex`, etc.)
-- `scripts/src/gdpr/repo-ingestion.ts` — GitHub repo download (zip API) + git clone fallback
-- `scripts/src/gdpr/static-scanner.ts` — regex-based file scanner (storage, backend, logging, config patterns)
-- `scripts/src/gdpr/dependency-analyzer.ts` — package.json dep classifier (AI/LLM, analytics, auth, logging, backend)
-- `scripts/src/gdpr/ast-analyzer.ts` — Babel AST walker detecting fetch/axios/fs/identity/logging patterns
-- `scripts/src/gdpr/gdpr-rule-engine.ts` — GDPR risk scoring engine (0–100, LOW/MEDIUM/HIGH)
-- `scripts/src/gdpr/index-store.ts` — saves/loads `output/index.json`
-- `scripts/src/gdpr/query-engine.ts` — in-memory query API over findings
+- `scripts/src/scan.ts` — CLI entry point (`node scan.js <github-url>`); thin wrapper over `@workspace/gdpr-scanner` that prints a report and writes `output/index.json`
+- `lib/gdpr-scanner/src/index.ts` — `runFullScan()` orchestrator + package barrel
+- `lib/gdpr-scanner/src/types.ts` — shared types (`Finding`, `VerifiedFlow`, `AuditCard`, `AuditSummary`, `DPIAScreening`, `RepoIndex`, etc.)
+- `lib/gdpr-scanner/src/repo-ingestion.ts` — GitHub repo download (zip API) + git clone fallback
+- `lib/gdpr-scanner/src/static-scanner.ts` — regex-based file scanner (storage, backend, logging, config patterns)
+- `lib/gdpr-scanner/src/dependency-analyzer.ts` — package.json dep classifier (AI/LLM, analytics, auth, logging, backend)
+- `lib/gdpr-scanner/src/ast-analyzer.ts` — Babel AST flow analyzer: traces user-input sources → sinks, detects AI/LLM provider sinks, and tags special-category / children's data
+- `lib/gdpr-scanner/src/gdpr-rule-engine.ts` — scoring (0–100), audit cards, DPO summary, AI clarifying questions, and DPIA screening
 - `output/index.json` — generated findings index (gitignored in production)
 - `repos/` — cloned/downloaded repositories (ephemeral)
+
+> Note: the older standalone engine that used to live in `scripts/src/gdpr/` has been removed. `scripts/` now depends on `@workspace/gdpr-scanner` so there is a single source of truth.
 
 ## Architecture decisions
 
 - **Zip download over git clone** — public repos are fetched via `github.com/{owner}/{repo}/archive/HEAD.zip` so no GitHub credentials are required. Git clone with GITHUB_TOKEN is used as a fast path for private repos.
 - **Custom AST walker instead of @babel/traverse** — avoids ESM/CJS interop issues with babel traverse in a `"type": "module"` package; the recursive walker covers all needed node types.
 - **Regex + AST hybrid** — static scanner catches patterns in non-JS files (README, config, .env); AST analyzer handles code semantics like `fetch()`, db inserts, and identity field access.
-- **Score clamped 0–100** — mitigations (no external calls, no identity, no persistence) actively reduce the score so well-behaved repos aren't falsely flagged.
-- **index.json as source of truth** — all downstream querying goes through `QueryEngine` which loads from `output/index.json`, keeping scan and query decoupled.
+- **Truth-only scoring** — only verified source→sink flows contribute to the score; capability patterns (a sink with no proven user-data source) score 0 and are reported as informational "potential signals". This keeps false positives low for a non-technical (DPO) audience.
+- **AI as its own dimension** — AI provider sinks are matched before the generic rules (so `openai…create()` isn't mistaken for a DB write) and scored in a dedicated bucket that can't be diluted by other categories.
 
 ## Product
 
 Scans any public GitHub repository and produces:
-- A structured GDPR risk report with score (0–100) and level (LOW / MEDIUM / HIGH)
-- Per-finding evidence: file, line number, AST node type, code snippet
-- Dependency classification (AI/LLM, analytics, auth, backend, logging)
-- `output/index.json` queryable via `QueryEngine` API
-- CLI summary with top-10 risks sorted by severity
+- A structured GDPR risk report with score (0–100) and level (LOW / MEDIUM / HIGH / NEEDS_REVIEW / INSUFFICIENT_EVIDENCE)
+- **Verified flows only** are scored: a user-input source traced to a sink. Sinks without a proven source are listed as "potential signals" and score 0
+- **AI/LLM data flows** are first-class: AI provider calls (SDK or endpoint) are detected as transfers, scored in their own bucket, and flagged NEEDS_REVIEW with clarifying questions (because code can't reveal what's in a prompt)
+- **DPIA screening**: special-category and children's-data heuristics plus self-assessment questions mapped to the org's DPIA template; the report states whether a DPIA looks likely
+- Plain-English audit cards + DPO summary (problems / working well / action items) with GDPR article references
+- Per-finding evidence: file, line number, code snippet; dependency classification (AI/LLM, analytics, auth, backend, logging)
 
 ## User preferences
 

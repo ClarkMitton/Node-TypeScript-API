@@ -4,6 +4,7 @@ export * from "./static-scanner.js";
 export * from "./dependency-analyzer.js";
 export * from "./ast-analyzer.js";
 export * from "./gdpr-rule-engine.js";
+export * from "./review.js";
 
 import { cloneRepo, extractRepoName } from "./repo-ingestion.js";
 import { runStaticScanner } from "./static-scanner.js";

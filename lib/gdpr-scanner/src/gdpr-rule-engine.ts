@@ -11,10 +11,12 @@ import type {
   DPOSummary,
   DPOFinding,
   DPOAction,
+  ClarifyingQuestion,
+  DPIAScreening,
 } from "./types.js";
 
 const DEP_CATEGORY_WEIGHTS: Record<string, number> = {
-  "AI/LLM provider": 5,
+  "AI/LLM provider": 10,
   Analytics: 8,
   "Backend/data": 3,
   Logging: 2,
@@ -38,6 +40,13 @@ function flowTitle(flow: VerifiedFlow): string {
     : flow.dataType === "BEHAVIOURAL" ? "behavioural data"
     : flow.dataType === "TECHNICAL" ? "technical data"
     : "untyped data";
+
+  if (flow.isAI) {
+    const provider = flow.aiProvider ?? "AI provider";
+    return flow.dataType === "IDENTIFIABLE"
+      ? `User identity data sent to an AI service (${provider})`
+      : `Data sent to an AI service (${provider})`;
+  }
 
   if (flow.sink.includes("writeFile") || flow.sink.includes("appendFile")) {
     return `${capitalise(dataLabel)} written to filesystem`;
@@ -63,6 +72,10 @@ function capitalise(s: string): string {
 
 function whyItMatters(flow: VerifiedFlow): string {
   const { sink, tags } = flow;
+  if (flow.isAI) {
+    const provider = flow.aiProvider ?? "an AI provider";
+    return `Data from ${flow.source} is sent to ${provider}, a third-party AI service. Anything included in the prompt is processed (and may be retained) by that provider — usually outside the UK/EEA, which engages Articles 44–49 on international transfers. If personal data is sent you need a lawful basis (Article 6) and a Data Processing Agreement with the provider; if the AI output is used to make decisions about people (grading, eligibility, recommendations), Article 22 (automated decision-making) and a DPIA are likely engaged. What is actually in the prompt cannot be confirmed from code alone — see the review questions below.`;
+  }
   if (tags.includes("USER_DATA_TRANSFER")) {
     return `Personal data sourced from ${flow.source} is sent to an external endpoint (${sink}). Article 44–49 GDPR govern international transfers; Article 13/14 require disclosure of recipients.`;
   }
@@ -83,6 +96,16 @@ function whyItMatters(flow: VerifiedFlow): string {
 
 function whyFlagged(flow: VerifiedFlow): string[] {
   const reasons: string[] = [];
+
+  if (flow.isAI) {
+    reasons.push(`A call to an AI/LLM service (${flow.aiProvider ?? "AI provider"}) was found at this location`);
+    reasons.push("A user-input source or an identifiable field name was present in the same function, so user data may be included in the request");
+    reasons.push("Whether personal data is actually sent depends on what the prompt contains — answer the review questions to finalise the rating");
+    if (flow.dataType === "IDENTIFIABLE") {
+      reasons.push("An identifiable field was matched in the call arguments");
+    }
+    return reasons;
+  }
 
   if (flow.source.startsWith("field_evidence:")) {
     const field = flow.source.replace("field_evidence:", "");
@@ -117,6 +140,20 @@ function whatIsNOTTrue(): string[] {
 }
 
 function riskLevelForFlow(flow: VerifiedFlow): RiskLevel {
+  // Special-category data (Art. 9) in a confirmed flow is always high risk.
+  if (flow.tags.includes("SPECIAL_CATEGORY_DATA")) return "HIGH";
+  // AI flows are flagged for review: a confirmed identifiable payload is HIGH,
+  // otherwise the rating is provisional until the staff member answers the
+  // clarifying questions (what's in the prompt? children's data? decisions?).
+  if (flow.isAI) {
+    if (flow.dataType === "IDENTIFIABLE" || flow.tags.includes("CHILDREN_DATA")) return "HIGH";
+    return "NEEDS_REVIEW";
+  }
+  // Children's / vulnerable-people's data: confirmed identifiable is high;
+  // otherwise ask (the field names suggest it but age can't be confirmed in code).
+  if (flow.tags.includes("CHILDREN_DATA")) {
+    return flow.dataType === "IDENTIFIABLE" ? "HIGH" : "NEEDS_REVIEW";
+  }
   if (flow.dataType === "IDENTIFIABLE" && flow.tags.includes("USER_DATA_TRANSFER")) return "HIGH";
   if (flow.dataType === "IDENTIFIABLE" && flow.tags.includes("USER_DATA_STORAGE")) return "HIGH";
   if (flow.dataType === "IDENTIFIABLE") return "MEDIUM";
@@ -124,22 +161,63 @@ function riskLevelForFlow(flow: VerifiedFlow): RiskLevel {
   return "LOW";
 }
 
-function buildAuditCards(flows: VerifiedFlow[]): AuditCard[] {
-  return flows.map((flow) => ({
-    title: flowTitle(flow),
-    riskLevel: riskLevelForFlow(flow),
-    confidence: flow.confidence,
-    flow: `${flow.source} → ${flow.sink}`,
-    evidence: {
-      file: flow.file,
-      line: flow.line,
-      code: flow.evidence,
+/**
+ * Questions whose answers change the rating and cannot be settled from code.
+ * Returned for AI flows so the report can ask the staff member directly,
+ * mapping each answer back to a DPIA screening trigger.
+ */
+function clarifyingQuestionsForFlow(flow: VerifiedFlow): ClarifyingQuestion[] {
+  if (!flow.isAI) return [];
+  const provider = flow.aiProvider ?? "the AI provider";
+  return [
+    {
+      id: "ai-personal-data",
+      question: `Does any personal data (names, emails, student work, or anything that could identify a person) get included in what is sent to ${provider}?`,
+      escalatesTo: "HIGH",
+      dpiaTrigger: "Use of new technologies; disclosure of personal data to a new recipient",
     },
-    whyItMatters: whyItMatters(flow),
-    whyThisWasFlagged: whyFlagged(flow),
-    whatIsNOTTrue: whatIsNOTTrue(),
-    tags: flow.tags,
-  }));
+    {
+      id: "ai-automated-decisions",
+      question: "Is the AI's output used to make or significantly influence decisions about people (e.g. grading, assessment, eligibility, flagging students)?",
+      escalatesTo: "HIGH",
+      dpiaTrigger: "Systematic profiling or automated decision-making with significant effects (GDPR Art. 22)",
+    },
+    {
+      id: "ai-childrens-data",
+      question: "Could the data sent relate to children or other vulnerable people (e.g. under-18 students)?",
+      escalatesTo: "HIGH",
+      dpiaTrigger: "Processing children's data / data of vulnerable data subjects",
+    },
+    {
+      id: "ai-special-category",
+      question: "Could it include special-category data (health, ethnicity, religion, sexual orientation) or biometric/genetic data?",
+      escalatesTo: "HIGH",
+      dpiaTrigger: "Processing of special-category data",
+    },
+  ];
+}
+
+function buildAuditCards(flows: VerifiedFlow[]): AuditCard[] {
+  return flows.map((flow) => {
+    const questions = clarifyingQuestionsForFlow(flow);
+    return {
+      title: flowTitle(flow),
+      riskLevel: riskLevelForFlow(flow),
+      confidence: flow.confidence,
+      flow: `${flow.source} → ${flow.sink}`,
+      evidence: {
+        file: flow.file,
+        line: flow.line,
+        code: flow.evidence,
+      },
+      whyItMatters: whyItMatters(flow),
+      whyThisWasFlagged: whyFlagged(flow),
+      whatIsNOTTrue: whatIsNOTTrue(),
+      tags: flow.tags,
+      needsReview: flow.needsReview,
+      clarifyingQuestions: questions.length > 0 ? questions : undefined,
+    };
+  });
 }
 
 // ─── DPO plain-English summary ─────────────────────────────────────────────────
@@ -206,6 +284,11 @@ function buildDPOSummary(
   const storageCount = flows.filter((f) => f.tags.includes("USER_DATA_STORAGE")).length;
   const hasAuth = deps.some((d) => d.category.startsWith("Auth"));
   const hasAnalytics = deps.some((d) => d.category === "Analytics");
+  const aiFlows = flows.filter((f) => f.isAI);
+  const hasAI = aiFlows.length > 0;
+  const aiProviders = [...new Set(aiFlows.map((f) => f.aiProvider ?? "an AI provider"))];
+  const hasSpecialCategory = flows.some((f) => f.tags.includes("SPECIAL_CATEGORY_DATA"));
+  const hasChildren = flows.some((f) => f.tags.includes("CHILDREN_DATA"));
 
   // ── Problems (what needs attention) ────────────────────────────────────────
   const problems: DPOFinding[] = [];
@@ -219,6 +302,18 @@ function buildDPOSummary(
   }
 
   for (const flow of flows) {
+    if (flow.isAI) {
+      const provider = flow.aiProvider ?? "an AI service";
+      const plain = flow.dataType === "IDENTIFIABLE"
+        ? `Personal data is being sent to ${provider} (an AI service). This is a transfer to a third party, usually outside the UK/EEA, and needs a lawful basis and a Data Processing Agreement. (${flow.file}, line ${flow.line})`
+        : `Data is being sent to ${provider} (an AI service). Whether it includes personal data depends on what the prompt contains — this needs to be checked (see the review questions). (${flow.file}, line ${flow.line})`;
+      problems.push({
+        description: plain,
+        badge: flow.dataType === "IDENTIFIABLE" ? "VERIFIED_FLOW" : "INCOMPLETE_FLOW",
+        colour: flow.dataType === "IDENTIFIABLE" ? "RED" : "AMBER",
+      });
+      continue;
+    }
     let plain: string;
     if (flow.source.startsWith("field_evidence:")) {
       const field = flow.source.replace("field_evidence:", "");
@@ -272,6 +367,25 @@ function buildDPOSummary(
     });
   }
 
+  if (hasAI) {
+    const providerList = aiProviders.join(", ");
+    actionItems.push({
+      action: `Confirm exactly what is sent to ${providerList}. Open the flagged lines and check whether prompts include names, emails, student work, or anything that identifies a person. If they do, this is a transfer of personal data to a third party and the steps below apply.`,
+      type: "REVIEW",
+      priority: "HIGH",
+    });
+    actionItems.push({
+      action: `Put a Data Processing Agreement in place with ${providerList}, and check where they process the data. Most AI providers are outside the UK/EEA, so you also need to document the safeguards for that international transfer (GDPR Articles 44–49). Many providers offer a "zero data retention" or "no training on your data" setting — turn it on if available.`,
+      type: "POLICY",
+      priority: "HIGH",
+    });
+    actionItems.push({
+      action: "If the AI's output is used to make or influence decisions about people (grading, assessment, eligibility, flagging), you must carry out a DPIA and give people a way to get a human review of the decision (GDPR Article 22). Tell users they are interacting with an AI system.",
+      type: "DPIA",
+      priority: "MEDIUM",
+    });
+  }
+
   if (identifiableCount > 0) {
     actionItems.push({
       action: "Make sure you have a clear legal reason to collect and store this personal data. The most common reasons are: the user gave consent, it's necessary for a contract with the user, or you have a legitimate interest. You must be able to prove which one applies.",
@@ -301,6 +415,22 @@ function buildDPOSummary(
     });
   }
 
+  if (hasSpecialCategory) {
+    actionItems.push({
+      action: "Fields that look like special-category data (e.g. health, ethnicity, religion, biometrics) were detected. This data has extra protection under GDPR Article 9 — you need a specific Article 9 condition in addition to your normal lawful basis, and a DPIA is effectively mandatory. Confirm what is actually stored and seek DPO advice.",
+      type: "DPIA",
+      priority: "HIGH",
+    });
+  }
+
+  if (hasChildren) {
+    actionItems.push({
+      action: "Fields suggesting children's or students' data were detected. If any data subjects are under 18, you must take extra care: clearer privacy information, a lawful basis appropriate to children, and (for consent-based processing of under-13s) parental consent. A DPIA is strongly recommended.",
+      type: "DPIA",
+      priority: "HIGH",
+    });
+  }
+
   if (!hasFlows && !hasCapability) {
     actionItems.push({
       action: "No action required at this time. Re-run this scan when new features are added that handle user data.",
@@ -310,21 +440,84 @@ function buildDPOSummary(
   }
 
   // ── Risk level and bottom-line reason ──────────────────────────────────────
+  // NEEDS_REVIEW maps to amber/MEDIUM for the DPO view: there is something
+  // material (an AI call) but the final rating depends on the answers given.
   const dpoRisk: "LOW" | "MEDIUM" | "HIGH" =
     overallRisk === "HIGH" ? "HIGH"
-    : overallRisk === "MEDIUM" ? "MEDIUM"
+    : overallRisk === "MEDIUM" || overallRisk === "NEEDS_REVIEW" ? "MEDIUM"
     : "LOW";
 
   let riskReason: string;
-  if (!hasFlows) {
+  if (overallRisk === "NEEDS_REVIEW") {
+    riskReason = `This app sends data to ${aiProviders.join(", ")} (an AI service). We can confirm the call exists but not what the prompt contains, so the final rating depends on your answers to the review questions. If any personal data — especially about students or children — is included, treat this as high risk and complete a DPIA.`;
+  } else if (!hasFlows) {
     riskReason = "No confirmed personal data handling was found. This codebase does not appear to need GDPR compliance work based on what was scanned — but this should be re-checked whenever new features are added.";
   } else if (dpoRisk === "HIGH") {
-    riskReason = `${flows.length} confirmed instance${flows.length > 1 ? "s" : ""} of personal data being stored or transferred. Action is needed before this app is used with real users — particularly a Privacy Notice, lawful basis documentation, and a DPIA.`;
+    riskReason = `${flows.length} confirmed instance${flows.length > 1 ? "s" : ""} of personal data being stored or transferred${hasAI ? ", including to an AI service" : ""}. Action is needed before this app is used with real users — particularly a Privacy Notice, lawful basis documentation, and a DPIA.`;
   } else {
     riskReason = "Limited personal data handling was confirmed. Review the items above and make sure a lawful basis exists for each data flow before going live.";
   }
 
   return { overview, problems, workingWell, actionItems, riskLevel: dpoRisk, riskReason };
+}
+
+// ─── DPIA screening (maps to the org's DPIA screening questions) ───────────────
+
+function buildDPIAScreening(flows: VerifiedFlow[], deps: DependencyFinding[]): DPIAScreening {
+  const hasAI = flows.some((f) => f.isAI) || deps.some((d) => d.category === "AI/LLM provider");
+  const hasSpecialCategory = flows.some((f) => f.tags.includes("SPECIAL_CATEGORY_DATA"));
+  const hasChildren = flows.some((f) => f.tags.includes("CHILDREN_DATA"));
+  const hasTransfer = flows.some((f) => f.tags.includes("USER_DATA_TRANSFER"));
+
+  const detectedTriggers: string[] = [];
+  if (hasAI) detectedTriggers.push("Uses AI / new technology");
+  if (hasSpecialCategory) detectedTriggers.push("May process special-category data (health, ethnicity, religion, biometrics)");
+  if (hasChildren) detectedTriggers.push("May process children's or vulnerable people's data");
+  if (hasTransfer) detectedTriggers.push("Sends personal data to a third party (possible international transfer)");
+
+  // Questions only a person can answer; each maps back to a DPIA screening trigger.
+  const questions: ClarifyingQuestion[] = [
+    {
+      id: "dpia-automated-decisions",
+      question: "Is personal data used to make automated decisions about people, or to profile them (scoring, ranking, flagging, eligibility)?",
+      escalatesTo: "HIGH",
+      dpiaTrigger: "Systematic profiling or automated decision-making with significant effects",
+    },
+    {
+      id: "dpia-special-category",
+      question: hasSpecialCategory
+        ? "We detected fields that look like special-category data — please confirm whether health, ethnicity, religion, biometric or similar data is processed."
+        : "Could the system process special-category data (health, ethnicity, religion, sexual orientation, biometric or genetic data)?",
+      escalatesTo: "HIGH",
+      dpiaTrigger: "Processing of special-category data on a large scale",
+    },
+    {
+      id: "dpia-children",
+      question: hasChildren
+        ? "We detected fields suggesting children or students — please confirm whether any data subjects are under 18 or otherwise vulnerable."
+        : "Does the processing involve children or other vulnerable people?",
+      escalatesTo: "HIGH",
+      dpiaTrigger: "Processing data of children or vulnerable data subjects",
+    },
+    {
+      id: "dpia-scale",
+      question: "Is personal data processed on a large scale, or combined/matched from several different sources?",
+      escalatesTo: "HIGH",
+      dpiaTrigger: "Large-scale processing; combining or matching data from multiple sources",
+    },
+    {
+      id: "dpia-monitoring",
+      question: "Does the system systematically monitor people, or track their location or behaviour?",
+      escalatesTo: "HIGH",
+      dpiaTrigger: "Systematic monitoring; tracking of location or behaviour",
+    },
+  ];
+
+  // A DPIA is recommended if code already evidences a screening trigger.
+  // (Even with none auto-detected, a "yes" to any question above means do one.)
+  const dpiaRecommended = hasAI || hasSpecialCategory || hasChildren;
+
+  return { dpiaRecommended, detectedTriggers, questions };
 }
 
 // ─── Audit summary generation ──────────────────────────────────────────────────
@@ -340,6 +533,7 @@ function buildAuditSummary(
   const storageCount = flows.filter((f) => f.tags.includes("USER_DATA_STORAGE")).length;
   const externalCount = flows.filter((f) => f.tags.includes("USER_DATA_TRANSFER")).length;
   const loggingCount = flows.filter((f) => f.tags.includes("IDENTIFIABLE_DATA_LOGGING")).length;
+  const aiFlowCount = flows.filter((f) => f.isAI).length;
 
   const nonFindings: string[] = [];
   if (flows.length === 0) nonFindings.push("No verified personal data flows detected");
@@ -368,6 +562,7 @@ function buildAuditSummary(
   }
 
   const dpoSummary = buildDPOSummary(flows, potentialFindings, deps, overallRisk);
+  const dpiaScreening = buildDPIAScreening(flows, deps);
 
   return {
     repo,
@@ -377,10 +572,12 @@ function buildAuditSummary(
     externalTransferCount: externalCount,
     storageCount,
     loggingCount,
+    aiFlowCount,
     potentialPatternCount: potentialFindings.length,
     conclusion,
     nonFindings,
     dpoSummary,
+    dpiaScreening,
   };
 }
 
@@ -396,6 +593,7 @@ export function computeGDPRScore(
     persistence: 0,
     identity: 0,
     logging: 0,
+    ai: 0,
     dependencies: 0,
   };
 
@@ -413,7 +611,12 @@ export function computeGDPRScore(
       : flow.dataType === "BEHAVIOURAL" ? 1.0
       : 0.7;
 
-    if (flow.tags.includes("USER_DATA_TRANSFER")) {
+    if (flow.tags.includes("AI_PROCESSING")) {
+      // Sending data to a third-party AI service is a transfer to a new recipient,
+      // usually overseas. Scored as its own dimension so it can't be diluted away.
+      // NEEDS_REVIEW flows score a provisional baseline; identifiable ones score full.
+      breakdown["ai"]! += flow.dataType === "IDENTIFIABLE" ? 30 : 18;
+    } else if (flow.tags.includes("USER_DATA_TRANSFER")) {
       breakdown["externalTransfer"]! += Math.min(25 * weight, 35);
     }
     if (flow.tags.includes("USER_DATA_STORAGE")) {
@@ -443,12 +646,25 @@ export function computeGDPRScore(
   breakdown["persistence"] = Math.min(breakdown["persistence"]!, 40);
   breakdown["identity"] = Math.min(breakdown["identity"]!, 20);
   breakdown["logging"] = Math.min(breakdown["logging"]!, 20);
+  breakdown["ai"] = Math.min(breakdown["ai"]!, 40);
 
   const raw = Object.values(breakdown).reduce((a, b) => a + b, 0);
   const score = Math.max(0, Math.min(100, Math.round(raw)));
   const avgConfidence = flowCount > 0 ? totalConfidence / flowCount : 0;
 
-  return { score, level: scoreToLevel(score), breakdown, confidence: avgConfidence };
+  // AI escalation: a confirmed identifiable-data → AI flow is HIGH regardless of
+  // the arithmetic; an AI flow awaiting review pulls a quiet score up to
+  // NEEDS_REVIEW so it can't be presented as "all clear".
+  const hasIdentifiableAI = verifiedFlows.some((f) => f.isAI && f.dataType === "IDENTIFIABLE");
+  const hasReviewAI = verifiedFlows.some((f) => f.isAI && f.needsReview);
+  let level = scoreToLevel(score);
+  if (hasIdentifiableAI) {
+    level = "HIGH";
+  } else if (hasReviewAI && (level === "LOW" || level === "INSUFFICIENT_EVIDENCE")) {
+    level = "NEEDS_REVIEW";
+  }
+
+  return { score, level, breakdown, confidence: avgConfidence };
 }
 
 // ─── Overall summary tags ──────────────────────────────────────────────────────

@@ -47,3 +47,12 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Scanner runtime artifacts (cloned repos + generated findings)
+repos/
+output/

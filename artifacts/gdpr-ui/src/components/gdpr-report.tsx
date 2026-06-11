@@ -3,6 +3,13 @@ import { createPortal } from "react-dom";
 
 // ─── Types (mirrored from scan-detail) ────────────────────────────────────────
 
+interface ClarifyingQuestion {
+  id: string;
+  question: string;
+  escalatesTo?: string;
+  dpiaTrigger?: string;
+}
+
 interface AuditCard {
   title: string;
   riskLevel: string;
@@ -13,6 +20,8 @@ interface AuditCard {
   whyThisWasFlagged: string[];
   whatIsNOTTrue: string[];
   tags: string[];
+  needsReview?: boolean;
+  clarifyingQuestions?: ClarifyingQuestion[];
 }
 
 interface Finding {
@@ -56,8 +65,15 @@ interface DPOSummary {
   actionItems: DPOAction[];
 }
 
+interface DPIAScreening {
+  dpiaRecommended: boolean;
+  detectedTriggers: string[];
+  questions: ClarifyingQuestion[];
+}
+
 interface AuditSummary {
   dpoSummary?: DPOSummary;
+  dpiaScreening?: DPIAScreening;
 }
 
 interface ScanInfo {
@@ -98,7 +114,15 @@ const DPA_CATEGORIES = new Set(["AI/LLM provider", "Analytics", "Logging/Monitor
 function riskColor(level: string | null | undefined): string {
   if (level === "HIGH") return "#c0392b";
   if (level === "MEDIUM") return "#d68910";
+  if (level === "NEEDS_REVIEW") return "#8e44ad";
+  if (level === "INSUFFICIENT_EVIDENCE") return "#5d6d7e";
   return "#1e8449";
+}
+
+function riskLabel(level: string | null | undefined): string {
+  if (level === "NEEDS_REVIEW") return "NEEDS REVIEW";
+  if (level === "INSUFFICIENT_EVIDENCE") return "NOT ENOUGH EVIDENCE";
+  return level ?? "—";
 }
 
 function confidenceWord(c: number): string {
@@ -396,7 +420,7 @@ export function GDPRReportModal({
               <p style={{ ...S.coverMeta, ...S.coverMetaLabel }}>Risk level</p>
               <div style={{ marginTop: 4 }}>
                 <span style={S.riskBadge(scoreReduced ? mitigatedRiskLevel : scan.riskLevel)}>
-                  {scoreReduced ? mitigatedRiskLevel : scan.riskLevel}
+                  {riskLabel(scoreReduced ? mitigatedRiskLevel : scan.riskLevel)}
                 </span>
               </div>
             </div>
@@ -485,7 +509,16 @@ export function GDPRReportModal({
                   <h3 style={S.h3}>{card.title}</h3>
                   <p style={{ ...S.para, marginBottom: 8 }}>
                     <span style={S.label}>{confidenceWord(card.confidence)}</span>
-                    <span style={{ ...S.label, color: riskColor(card.riskLevel), background: "none", border: `1px solid ${riskColor(card.riskLevel)}`, padding: "1px 7px" }}>{card.riskLevel}</span>
+                    <span style={{ ...S.label, color: riskColor(card.riskLevel), background: "none", border: `1px solid ${riskColor(card.riskLevel)}`, padding: "1px 7px" }}>{riskLabel(card.riskLevel)}</span>
+                    {card.tags?.includes("AI_PROCESSING") && (
+                      <span style={{ ...S.label, color: "#8e44ad", background: "#f5eef8", border: "1px solid #d2b4de" }}>AI SERVICE</span>
+                    )}
+                    {card.tags?.includes("SPECIAL_CATEGORY_DATA") && (
+                      <span style={{ ...S.label, color: "#c0392b", background: "#fdecea", border: "1px solid #f5b7b1" }}>SPECIAL CATEGORY</span>
+                    )}
+                    {card.tags?.includes("CHILDREN_DATA") && (
+                      <span style={{ ...S.label, color: "#b9770e", background: "#fef9e7", border: "1px solid #f7dc6f" }}>CHILDREN / STUDENTS</span>
+                    )}
                   </p>
 
                   <div style={S.evidenceBlock}>
@@ -509,6 +542,26 @@ export function GDPRReportModal({
                         </div>
                       ))}
                     </>
+                  )}
+
+                  {card.clarifyingQuestions && card.clarifyingQuestions.length > 0 && (
+                    <div style={{ ...S.warnBox, marginTop: 10 }}>
+                      <p style={{ margin: "0 0 6px 0", fontWeight: 700, fontSize: 13 }}>
+                        Questions to confirm (these decide the final rating):
+                      </p>
+                      <ul style={{ ...S.bulletList, marginTop: 0, marginBottom: 0, color: "#78350f" }}>
+                        {card.clarifyingQuestions.map((q) => (
+                          <li key={q.id} style={{ fontSize: 13 }}>
+                            {q.question}
+                            {q.dpiaTrigger && (
+                              <span style={{ display: "block", fontSize: 11, color: "#92732f", marginTop: 2 }}>
+                                If yes → likely a DPIA trigger: {q.dpiaTrigger}.
+                              </span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                   )}
 
                   {card.whatIsNOTTrue.length > 0 && (
@@ -604,7 +657,7 @@ export function GDPRReportModal({
           <p style={{ ...S.para, margin: 0 }}>
             <strong>Overall risk: </strong>
             <span style={{ color: riskColor(scoreReduced ? mitigatedRiskLevel : scan.riskLevel), fontWeight: 700 }}>
-              {scoreReduced ? mitigatedRiskLevel : scan.riskLevel}
+              {riskLabel(scoreReduced ? mitigatedRiskLevel : scan.riskLevel)}
             </span>
             {" "}(score {scoreReduced ? mitigatedScore : (scan.gdprScore ?? 0)} / 100
             {scoreReduced ? `, reduced from ${scan.gdprScore} after controls recorded` : ""}).
@@ -633,6 +686,45 @@ export function GDPRReportModal({
               ? "No confirmed personal data movements were detected. Continue to check the potential signals listed above and re-scan if you add new features."
               : "To reduce your risk score, consider completing a Data Protection Impact Assessment (DPIA) for the highest-risk flows, adding user consent before data collection, and implementing a way for users to request deletion of their data."}
           </p>
+        )}
+
+        {/* ── Do you need a DPIA? ── */}
+        {auditSummary?.dpiaScreening && (
+          <>
+            <h3 style={{ ...S.h3, marginTop: 28 }}>Do you need a DPIA?</h3>
+            {auditSummary.dpiaScreening.dpiaRecommended ? (
+              <div style={S.warnBox}>
+                <strong>A Data Protection Impact Assessment (DPIA) looks likely to be required.</strong> The scan found:
+                <ul style={{ ...S.bulletList, marginTop: 6, marginBottom: 0, color: "#78350f" }}>
+                  {auditSummary.dpiaScreening.detectedTriggers.map((t, i) => (
+                    <li key={i} style={{ fontSize: 13 }}>{t}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <p style={S.para}>
+                No automatic DPIA triggers were detected in the code. Still confirm the questions below — answering “yes” to any of them means a DPIA is required.
+              </p>
+            )}
+            <p style={{ ...S.para, marginBottom: 6, marginTop: 12 }}>
+              <strong>Confirm these against your DPIA screening questions:</strong>
+            </p>
+            <ul style={S.bulletList}>
+              {auditSummary.dpiaScreening.questions.map((q) => (
+                <li key={q.id} style={{ marginBottom: 6 }}>
+                  {q.question}
+                  {q.dpiaTrigger && (
+                    <span style={{ display: "block", fontSize: 11, color: "#868e96", marginTop: 2 }}>
+                      Maps to DPIA trigger: {q.dpiaTrigger}.
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <div style={S.infoBox}>
+              This screening mirrors the questions in your organisation’s DPIA template. It is a prompt for a human decision, not a completed DPIA. If in doubt, contact your Data Protection Officer.
+            </div>
+          </>
         )}
 
         {/* ── Section 7: Honest limitations ── */}

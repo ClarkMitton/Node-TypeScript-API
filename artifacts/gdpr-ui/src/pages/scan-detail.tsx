@@ -38,6 +38,13 @@ type VerifiedFlow = {
   tags: string[];
 };
 
+type ClarifyingQuestion = {
+  id: string;
+  question: string;
+  escalatesTo?: string;
+  dpiaTrigger?: string;
+};
+
 type AuditCard = {
   title: string;
   riskLevel: string;
@@ -48,6 +55,39 @@ type AuditCard = {
   whyThisWasFlagged: string[];
   whatIsNOTTrue: string[];
   tags: string[];
+  needsReview?: boolean;
+  clarifyingQuestions?: ClarifyingQuestion[];
+};
+
+type AnswerValue = "yes" | "no" | "unsure";
+
+type ReviewAnswer = {
+  id: number;
+  flowKey: string;
+  questionId: string;
+  answer: AnswerValue;
+  createdAt: string;
+};
+
+type ReviewOutcome = {
+  finalRiskLevel: string;
+  finalRiskReason: string;
+  cardResolutions: {
+    flowKey: string;
+    originalRiskLevel: string;
+    resolvedRiskLevel: string;
+    resolved: boolean;
+    escalated: boolean;
+  }[];
+  dpiaRequired: boolean;
+  openQuestionCount: number;
+  totalQuestionCount: number;
+};
+
+type DPIAScreening = {
+  dpiaRecommended: boolean;
+  detectedTriggers: string[];
+  questions: ClarifyingQuestion[];
 };
 
 type DPOBadge = "NO_DATA_FOUND" | "CAPABILITY_ONLY" | "VERIFIED_FLOW" | "INCOMPLETE_FLOW";
@@ -83,10 +123,12 @@ type AuditSummary = {
   externalTransferCount: number;
   storageCount: number;
   loggingCount: number;
+  aiFlowCount?: number;
   potentialPatternCount: number;
   conclusion: string;
   nonFindings: string[];
   dpoSummary?: DPOSummary;
+  dpiaScreening?: DPIAScreening;
 };
 
 type MitigationType =
@@ -139,8 +181,15 @@ const RISK_COLORS: Record<string, string> = {
   HIGH: "#f97583",
   MEDIUM: "#e3b341",
   LOW: "#3fb950",
+  NEEDS_REVIEW: "#bc8cff",
   INSUFFICIENT_EVIDENCE: "#8b949e",
 };
+
+function riskLabel(level: string | null | undefined): string {
+  if (level === "NEEDS_REVIEW") return "NEEDS REVIEW";
+  if (level === "INSUFFICIENT_EVIDENCE") return "NOT ENOUGH EVIDENCE";
+  return level ?? "—";
+}
 
 const DATA_TYPE_COLORS: Record<string, string> = {
   IDENTIFIABLE: "#f97583",
@@ -377,19 +426,159 @@ function AuditSummaryPanel({ summary }: { summary: AuditSummary }) {
   );
 }
 
+// ─── Review questions (flag + ask the user) ────────────────────────────────────
+
+const ANSWER_OPTIONS: { value: AnswerValue; label: string }[] = [
+  { value: "yes", label: "Yes" },
+  { value: "no", label: "No" },
+  { value: "unsure", label: "Not sure" },
+];
+
+interface ReviewQuestionListProps {
+  scanId: number;
+  flowKey: string;
+  questions: ClarifyingQuestion[];
+  answers: ReviewAnswer[];
+  onRefresh: () => void;
+}
+
+function ReviewQuestionList({ scanId, flowKey, questions, answers, onRefresh }: ReviewQuestionListProps) {
+  const [saving, setSaving] = useState<string | null>(null);
+  const answerFor = (qid: string): AnswerValue | undefined =>
+    answers.find((a) => a.flowKey === flowKey && a.questionId === qid)?.answer;
+
+  async function answer(questionId: string, value: AnswerValue) {
+    setSaving(questionId);
+    try {
+      const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+      await fetch(`${base}/api/scans/${scanId}/review-answers`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ flowKey, questionId, answer: value }),
+      });
+      onRefresh();
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      {questions.map((q) => {
+        const current = answerFor(q.id);
+        return (
+          <div key={q.id} className="space-y-1.5">
+            <p className="text-xs text-[#c9d1d9] leading-relaxed">{q.question}</p>
+            <div className="flex items-center gap-1.5">
+              {ANSWER_OPTIONS.map((opt) => {
+                const active = current === opt.value;
+                const isYes = opt.value === "yes";
+                return (
+                  <button
+                    key={opt.value}
+                    onClick={() => void answer(q.id, opt.value)}
+                    disabled={saving === q.id}
+                    className={`text-[11px] px-2.5 py-1 rounded border transition-colors ${
+                      active
+                        ? isYes
+                          ? "bg-[#2d1a1a] border-[#f97583]/50 text-[#f97583]"
+                          : "bg-[#1a2828] border-[#56d364]/40 text-[#56d364]"
+                        : "bg-[#0d1117] border-[#30363d] text-[#8b949e] hover:border-[#484f58]"
+                    }`}
+                  >
+                    {saving === q.id && active ? <Loader2 className="h-3 w-3 animate-spin inline" /> : opt.label}
+                  </button>
+                );
+              })}
+              {current && q.dpiaTrigger && current === "yes" && (
+                <span className="text-[10px] text-[#e3b341] ml-1">→ DPIA trigger</span>
+              )}
+            </div>
+            {q.dpiaTrigger && (
+              <p className="text-[10px] text-[#484f58]">If yes → {q.dpiaTrigger}.</p>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── DPIA screening panel ───────────────────────────────────────────────────────
+
+interface DPIAScreeningPanelProps {
+  screening: DPIAScreening;
+  outcome: ReviewOutcome | null | undefined;
+  scanId: number;
+  answers: ReviewAnswer[];
+  onRefresh: () => void;
+}
+
+function DPIAScreeningPanel({ screening, outcome, scanId, answers, onRefresh }: DPIAScreeningPanelProps) {
+  const required = outcome?.dpiaRequired ?? screening.dpiaRecommended;
+  return (
+    <div className="bg-[#161b22] border border-[#bc8cff]/30 rounded-lg overflow-hidden">
+      <div className="px-5 py-3 border-b border-[#21262d] flex items-center gap-2">
+        <ClipboardList className="h-3.5 w-3.5 text-[#bc8cff]" />
+        <h3 className="text-xs text-[#bc8cff] uppercase tracking-widest font-medium">Do you need a DPIA?</h3>
+      </div>
+
+      <div className="px-5 py-4 border-b border-[#21262d]">
+        {required ? (
+          <>
+            <p className="text-sm text-[#e6edf3] font-medium mb-2">A DPIA looks likely to be required.</p>
+            {screening.detectedTriggers.length > 0 && (
+              <ul className="space-y-1">
+                {screening.detectedTriggers.map((t, i) => (
+                  <li key={i} className="flex items-start gap-2 text-xs text-[#8b949e]">
+                    <span className="h-1.5 w-1.5 rounded-full bg-[#bc8cff] shrink-0 mt-1.5" />
+                    {t}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </>
+        ) : (
+          <p className="text-sm text-[#8b949e] leading-relaxed">
+            No automatic DPIA triggers were detected. Still confirm the questions below — answering “yes” to any means a DPIA is required.
+          </p>
+        )}
+      </div>
+
+      <div className="px-5 py-4">
+        <p className="text-[10px] text-[#484f58] uppercase tracking-widest mb-3 font-medium">
+          Confirm against your DPIA screening questions
+        </p>
+        <ReviewQuestionList
+          scanId={scanId}
+          flowKey="summary"
+          questions={screening.questions}
+          answers={answers}
+          onRefresh={onRefresh}
+        />
+      </div>
+    </div>
+  );
+}
+
 // ─── Audit card ───────────────────────────────────────────────────────────────
 
 interface AuditCardPanelProps {
   card: AuditCard;
   scanId: number;
   mitigations: Mitigation[];
+  reviewAnswers: ReviewAnswer[];
+  resolvedRiskLevel?: string;
   onRefresh: () => void;
 }
 
-function AuditCardPanel({ card, scanId, mitigations = [], onRefresh }: AuditCardPanelProps) {
+function AuditCardPanel({ card, scanId, mitigations = [], reviewAnswers, resolvedRiskLevel, onRefresh }: AuditCardPanelProps) {
   const flowKey = `${card.evidence.file}:${card.evidence.line}`;
-  const riskColor = RISK_COLORS[card.riskLevel] ?? "#8b949e";
+  const displayLevel = resolvedRiskLevel ?? card.riskLevel;
+  const riskColor = RISK_COLORS[displayLevel] ?? "#8b949e";
   const isMitigated = mitigations.length > 0;
+  const cardAnswers = reviewAnswers.filter((a) => a.flowKey === flowKey);
+  const hasQuestions = (card.clarifyingQuestions?.length ?? 0) > 0;
 
   const [formOpen, setFormOpen] = useState(false);
   const [selType, setSelType] = useState<MitigationType>("DPIA_COMPLETED");
@@ -449,7 +638,7 @@ function AuditCardPanel({ card, scanId, mitigations = [], onRefresh }: AuditCard
           )}
           <span className="text-[10px] text-[#484f58]">{confidenceLabel(card.confidence)}</span>
           <span className="text-[10px] font-medium uppercase" style={{ color: isMitigated ? "#3fb950" : riskColor }}>
-            {card.riskLevel}
+            {riskLabel(displayLevel)}
           </span>
         </div>
       </div>
@@ -506,6 +695,25 @@ function AuditCardPanel({ card, scanId, mitigations = [], onRefresh }: AuditCard
           </ul>
         </div>
       </div>
+
+      {/* ── Review questions (decide the final rating) ── */}
+      {hasQuestions && (
+        <div className="border-t border-[#21262d] px-4 py-3 bg-[#15121d]">
+          <div className="flex items-center gap-2 mb-2.5">
+            <AlertTriangle className="h-3.5 w-3.5 text-[#bc8cff]" />
+            <p className="text-[10px] text-[#bc8cff] uppercase tracking-widest font-medium">
+              Confirm to finalise the rating
+            </p>
+          </div>
+          <ReviewQuestionList
+            scanId={scanId}
+            flowKey={flowKey}
+            questions={card.clarifyingQuestions ?? []}
+            answers={cardAnswers}
+            onRefresh={onRefresh}
+          />
+        </div>
+      )}
 
       {/* ── Mitigations section ── */}
       <div className="border-t border-[#21262d]">
@@ -929,6 +1137,8 @@ export default function ScanDetail() {
     mitigatedScore?: number;
     mitigatedRiskLevel?: string;
     vibeChecks?: VibeCheck[];
+    reviewAnswers?: ReviewAnswer[];
+    reviewOutcome?: ReviewOutcome | null;
   }) | undefined;
 
   const deleteScan = useDeleteScan();
@@ -979,6 +1189,11 @@ export default function ScanDetail() {
   const auditCards = scan.auditCards ?? [];
   const auditSummary = scan.auditSummary ?? null;
   const mitigations = scan.mitigations ?? [];
+  const reviewAnswers = scan.reviewAnswers ?? [];
+  const reviewOutcome = scan.reviewOutcome ?? null;
+  const resolvedByFlow = new Map<string, string>(
+    (reviewOutcome?.cardResolutions ?? []).map((r) => [r.flowKey, r.resolvedRiskLevel]),
+  );
   const vibeChecks = (scan.vibeChecks ?? []) as VibeCheck[];
   const mitigatedScore = scan.mitigatedScore ?? scan.gdprScore ?? 0;
   const mitigatedRiskLevel = scan.mitigatedRiskLevel ?? scan.riskLevel ?? "LOW";
@@ -1134,9 +1349,49 @@ export default function ScanDetail() {
             </div>
           )}
 
+          {/* Final rating after review answers */}
+          {reviewOutcome && (reviewOutcome.totalQuestionCount > 0) && (
+            <div
+              className="rounded-lg px-5 py-4 border"
+              style={{
+                borderColor: `${RISK_COLORS[reviewOutcome.finalRiskLevel] ?? "#8b949e"}55`,
+                background: `${RISK_COLORS[reviewOutcome.finalRiskLevel] ?? "#8b949e"}14`,
+              }}
+            >
+              <div className="flex items-start gap-3">
+                <ShieldAlert className="h-4 w-4 shrink-0 mt-0.5" style={{ color: RISK_COLORS[reviewOutcome.finalRiskLevel] ?? "#8b949e" }} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-medium text-[#e6edf3]">Rating after review:</span>
+                    <span className="text-xs font-bold uppercase tracking-wider" style={{ color: RISK_COLORS[reviewOutcome.finalRiskLevel] ?? "#8b949e" }}>
+                      {riskLabel(reviewOutcome.finalRiskLevel)}
+                    </span>
+                    {reviewOutcome.openQuestionCount > 0 && (
+                      <span className="text-[10px] text-[#bc8cff]">
+                        {reviewOutcome.openQuestionCount} of {reviewOutcome.totalQuestionCount} question{reviewOutcome.totalQuestionCount > 1 ? "s" : ""} still to answer
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-[#8b949e] leading-relaxed mt-1">{reviewOutcome.finalRiskReason}</p>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* DPO plain-English summary */}
           {auditSummary?.dpoSummary && (
             <DPOSummaryPanel dpo={auditSummary.dpoSummary} />
+          )}
+
+          {/* DPIA screening + questions */}
+          {auditSummary?.dpiaScreening && (
+            <DPIAScreeningPanel
+              screening={auditSummary.dpiaScreening}
+              outcome={reviewOutcome}
+              scanId={id}
+              answers={reviewAnswers}
+              onRefresh={() => void refetch()}
+            />
           )}
 
           {/* Audit summary */}
@@ -1159,6 +1414,8 @@ export default function ScanDetail() {
                   card={card}
                   scanId={id}
                   mitigations={getMitigationsForCard(card)}
+                  reviewAnswers={reviewAnswers}
+                  resolvedRiskLevel={resolvedByFlow.get(`${card.evidence.file}:${card.evidence.line}`)}
                   onRefresh={() => void refetch()}
                 />
               ))}
