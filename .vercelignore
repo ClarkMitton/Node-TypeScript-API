@@ -1,0 +1,10 @@
+node_modules
+.pnpm-store
+.git
+.gitignore
+repos
+output
+.env.local
+.env.*.local
+*.log
+.DS_Store
