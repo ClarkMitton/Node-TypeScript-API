@@ -4,18 +4,7 @@
   "installCommand": "pnpm install",
   "framework": "other",
   "outputDirectory": "artifacts/api-server/dist",
-  "env": [
-    {
-      "key": "ANTHROPIC_API_KEY",
-      "description": "Anthropic API key for AI service"
-    },
-    {
-      "key": "DATABASE_URL",
-      "description": "PostgreSQL connection string"
-    },
-    {
-      "key": "NODE_ENV",
-      "value": "production"
-    }
-  ]
+  "env": {
+    "NODE_ENV": "production"
+  }
 }
