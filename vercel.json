@@ -2,7 +2,7 @@
   "buildCommand": "pnpm run typecheck && pnpm -r --if-present run build",
   "devCommand": "pnpm dev",
   "installCommand": "pnpm install",
-  "framework": "other",
+  "framework": "node",
   "outputDirectory": "artifacts/api-server/dist",
   "env": {
     "NODE_ENV": "production"
