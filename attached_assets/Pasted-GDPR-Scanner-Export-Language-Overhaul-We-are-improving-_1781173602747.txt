@@ -1,0 +1,102 @@
+GDPR Scanner — Export & Language Overhaul
+We are improving an existing GDPR scanning tool built for educators and "vibe coders" using platforms like Lovable and Replit. The primary audience is non-technical app builders, not DPOs or developers. All changes should assume this audience.
+
+1. Report Export (highest priority)
+Add a "Download Report" button to the scan detail page. This should generate a clean, professional PDF export of the scan results using client-side HTML-to-PDF (no new backend required).
+The PDF should contain the following sections in this order:
+Cover
+
+Title: "GDPR Risk Report"
+System scanned (repo name/URL)
+Date of scan
+Risk level badge (HIGH / MEDIUM / LOW)
+Original score and mitigated score if mitigations exist
+Short caveat: "This report was generated automatically. It covers JavaScript and TypeScript files only. It should be reviewed by someone responsible for data protection before being shared or acted upon."
+
+What we found
+
+Number of verified data flows
+Number of capability signals (with plain English explanation: "We found evidence these libraries or features are present, but couldn't confirm personal data is flowing through them")
+Dependencies flagged as GDPR-relevant, listed by plain English category (Analytics, Authentication, AI/ML, Logging) — not the full dependency list, just flagged ones
+Stack detected and coverage note: "This codebase uses JavaScript/TypeScript. Estimated coverage: high. File types present but not analysed: [list if any]." If other file types like .vue, .py, .php, .rb, .go are detected in the repo, list them here with the note: "These file types were found but not scanned. Manual review recommended."
+
+Data flows in detail
+
+One section per verified flow
+Plain English heading — not file:line as the title, but a human-readable description of what's happening e.g. "Form data sent to external service"
+Evidence (file:line + code snippet) shown as supporting detail, not the lead
+"Why this matters" in plain English
+Confidence level shown as "Higher confidence" or "Lower confidence" — not decimal numbers
+Any mitigations recorded against this flow, listed with type and description
+What is NOT confirmed (preserve the truth enforcement framing but in plain English: "We did not confirm that...")
+
+Capability signals
+
+Listed separately from verified flows
+Clear label: "These are potential signals, not confirmed risks"
+Brief plain English description of each
+
+Sub-processors detected
+
+Plain English list of third-party services identified through dependencies
+Flag any where a Data Processing Agreement may be needed
+Note: "Direct API integrations via environment variables may not appear here — check your .env configuration"
+
+Risk summary
+
+Plain English summary of overall risk
+If mitigations exist: show original vs mitigated score with a note that mitigations were recorded
+If no mitigations: suggest next steps in plain English
+
+Honest limitations
+
+This scanner covers JS/TS files only
+Source detection covers common patterns — custom hooks, GraphQL resolvers, and some ORM patterns may not be detected
+Confidence scores are indicators, not precise measurements
+Findings reflect the codebase at time of scan — re-scan after significant changes
+This report does not constitute a completed DPIA
+
+
+2. Plain English language overhaul throughout the UI
+Audit cards, the DPO summary panel, and all scan result language should be rewritten for a non-technical builder audience. Specific changes:
+
+Replace all instances of technical sink/source language in user-facing text with plain English equivalents
+"Verified flow" → "Confirmed data movement"
+"Capability finding" → "Potential signal"
+"Sink" → "where data is sent or stored"
+"Source" → "where data comes from"
+Confidence 0.85 → "Higher confidence"
+Confidence 0.55 → "Lower confidence"
+Decimal risk scores can remain in the gauge but all descriptive text should use LOW / MEDIUM / HIGH only
+Action card labels: CODE_CHANGE → "Fix needed in code", POLICY → "Policy or process needed", DPIA NEEDED → "Formal assessment recommended", REVIEW → "Needs review"
+
+
+3. Lovable/Replit context awareness
+Add a detection step after scanning that checks for common patterns specific to vibe-coded apps:
+
+Supabase client initialisation (supabase.createClient) — flag with note: "Supabase detected. Check that Row Level Security (RLS) is enabled on all tables containing personal data"
+Direct OpenAI/Anthropic/ElevenLabs/Gemini API calls not in package.json — flag with note: "Direct AI API integration detected. Confirm you have a Data Processing Agreement with this provider"
+Environment variable usage (.env references) — flag with note: "Environment variables detected. Ensure no personal data is stored in .env files and that API keys are not exposed client-side"
+localStorage usage with any identifiable-looking keys — flag with note: "Data is being stored in the browser. This persists on the user's device — confirm this is intentional and disclosed"
+
+These should appear as a dedicated "Things to check manually" section in both the UI scan detail and the PDF export.
+
+4. Export structure and tone
+The PDF should feel like something a responsible educator produced, not an automated tool output. Tone throughout should be:
+
+Direct and plain — no jargon
+Honest about limitations — don't overclaim
+Actionable — every flagged item should have a plain English "what to do" suggestion
+Non-alarmist — MEDIUM risk findings should not read like the world is ending
+
+Use a clean single-column layout. Section headings clearly labelled. Code snippets in monospace but kept brief. No tables unless genuinely clearer than prose.
+
+5. Do not change
+
+Auth — leave as is (no auth)
+Branding — leave as is
+Core scanning engine logic — do not modify AST/regex/dependency scan code
+Database schema — do not modify
+AI chat — leave as is
+Scoring formula — leave as is
+Mitigation system — leave as is

@@ -391,3 +391,17 @@
     inset: -1px;
   }
 }
+
+@media print {
+  #root {
+    display: none !important;
+  }
+  .gdpr-print-modal {
+    position: static !important;
+    overflow: visible !important;
+    height: auto !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}

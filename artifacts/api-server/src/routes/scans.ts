@@ -71,6 +71,66 @@ function calcMitigatedScore(
   return { mitigatedScore, mitigatedRiskLevel };
 }
 
+// ─── Vibe checks (Lovable / Replit / vibe-coder patterns) ─────────────────────
+
+interface VibeCheck {
+  id: string;
+  title: string;
+  note: string;
+}
+
+function buildVibeChecks(
+  deps: Array<{ name: string; category: string }>,
+  findings: Array<{ type: string; evidence: string; file: string; category: string }>,
+): VibeCheck[] {
+  const checks: VibeCheck[] = [];
+
+  const hasSupabase = deps.some((d) => /^@?supabase/.test(d.name));
+  if (hasSupabase) {
+    checks.push({
+      id: "supabase-rls",
+      title: "Supabase detected — check Row Level Security",
+      note: "Supabase is in your dependencies. Make sure Row Level Security (RLS) is enabled on every database table that holds personal data. Without RLS, any authenticated user may be able to read all rows in those tables.",
+    });
+  }
+
+  const aiDepPattern = /^openai$|^@openai\/|^@anthropic-ai\/|^elevenlabs|^@google\/generative-ai/;
+  const aiEvidencePattern = /openai\.com|anthropic\.com|elevenlabs\.io|generativelanguage\.googleapis|OPENAI_API_KEY|ANTHROPIC_API_KEY|ELEVENLABS_API_KEY|GEMINI_API_KEY/i;
+  const hasDirectAI = deps.some((d) => aiDepPattern.test(d.name)) || findings.some((f) => aiEvidencePattern.test(f.evidence));
+  if (hasDirectAI) {
+    checks.push({
+      id: "direct-ai-api",
+      title: "AI provider integration detected",
+      note: "Your app sends data to an AI service (OpenAI, Anthropic, ElevenLabs, or Google Gemini). If you include any personal data in prompts or API calls, you need a Data Processing Agreement with that provider. Review exactly what data is being sent.",
+    });
+  }
+
+  const hasEnvRefs = findings.some((f) => /process\.env\.|import\.meta\.env\./.test(f.evidence));
+  const hasBrowserEnvRefs = findings.some((f) => /VITE_|NEXT_PUBLIC_/.test(f.evidence) && /key|secret|token|password/i.test(f.evidence));
+  if (hasEnvRefs) {
+    checks.push({
+      id: "env-vars",
+      title: "Environment variables detected",
+      note: `Environment variables are used in this codebase. Make sure no personal data is stored in .env files, and that API keys are never exposed to the browser.${hasBrowserEnvRefs ? " Client-side environment variables (VITE_ or NEXT_PUBLIC_) were detected — verify these do not expose secret keys." : ""}`,
+    });
+  }
+
+  const hasLocalStoragePII = findings.some((f) => {
+    const isStorage = /localStorage|sessionStorage/.test(f.evidence ?? "");
+    const hasIdentifiable = /email|user|student|name\b|\.id\b|auth|token|session/i.test(f.evidence ?? "");
+    return isStorage && hasIdentifiable;
+  });
+  if (hasLocalStoragePII) {
+    checks.push({
+      id: "local-storage-pii",
+      title: "Personal data may be stored in the browser",
+      note: "Data with identifiable-looking field names is being stored in browser storage (localStorage or sessionStorage). This persists on the user's device even after they log out. Make sure this is intentional and disclosed in your privacy notice. Never store passwords, financial data, or sensitive health information this way.",
+    });
+  }
+
+  return checks;
+}
+
 // ─── Stats ─────────────────────────────────────────────────────────────────────
 
 router.get("/scans/stats", async (_req, res): Promise<void> => {
@@ -260,6 +320,10 @@ router.get("/scans/:id", async (req, res): Promise<void> => {
     dependencies: (scan.dependencies as unknown[]) ?? [],
   });
 
+  const allFindings = (scan.findings as Array<{ type: string; evidence: string; file: string; category: string }>) ?? [];
+  const allDeps = (scan.dependencies as Array<{ name: string; category: string; gdprRelevance: number }>) ?? [];
+  const vibeChecks = buildVibeChecks(allDeps, allFindings);
+
   res.json({
     ...base,
     verifiedFlows,
@@ -268,6 +332,7 @@ router.get("/scans/:id", async (req, res): Promise<void> => {
     mitigations,
     mitigatedScore,
     mitigatedRiskLevel,
+    vibeChecks,
   });
 });
 

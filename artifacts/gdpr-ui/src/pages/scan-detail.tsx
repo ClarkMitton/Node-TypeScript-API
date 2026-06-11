@@ -6,7 +6,8 @@ import { RiskBadge } from "@/components/risk-badge";
 import { ScoreGauge } from "@/components/score-gauge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Loader2, Trash2, Github, AlertCircle, CheckCircle2, ShieldAlert, ArrowRight, Info, FileText, Bot, Send, User, ClipboardList, AlertTriangle, Plus, X, ChevronDown, ChevronUp, Shield } from "lucide-react";
+import { ArrowLeft, Loader2, Trash2, Github, AlertCircle, CheckCircle2, ShieldAlert, ArrowRight, Info, FileText, Bot, Send, User, ClipboardList, AlertTriangle, Plus, X, ChevronDown, ChevronUp, Shield, FileDown, Eye } from "lucide-react";
+import { GDPRReportModal } from "@/components/gdpr-report";
 import { Link } from "wouter";
 
 // ─── Local types for new fields ───────────────────────────────────────────────
@@ -106,6 +107,12 @@ type Mitigation = {
   createdAt: string;
 };
 
+type VibeCheck = {
+  id: string;
+  title: string;
+  note: string;
+};
+
 const MITIGATION_LABELS: Record<MitigationType, string> = {
   DPIA_COMPLETED:     "DPIA completed",
   CONSENT_ADDED:      "User consent added",
@@ -155,13 +162,17 @@ function confidencePct(c: number): string {
   return `${Math.round(c * 100)}%`;
 }
 
+function confidenceLabel(c: number): string {
+  return c >= 0.75 ? "Higher confidence" : "Lower confidence";
+}
+
 // ─── DPO summary panel ────────────────────────────────────────────────────────
 
 const BADGE_STYLES: Record<string, { bg: string; text: string; label: string }> = {
   NO_DATA_FOUND:   { bg: "bg-[#1a2d1a]", text: "text-[#3fb950]", label: "NO DATA FOUND" },
-  CAPABILITY_ONLY: { bg: "bg-[#2d2a1a]", text: "text-[#e3b341]", label: "CAPABILITY ONLY" },
-  VERIFIED_FLOW:   { bg: "bg-[#2d1a1a]", text: "text-[#f97583]", label: "VERIFIED FLOW" },
-  INCOMPLETE_FLOW: { bg: "bg-[#1a1f2d]", text: "text-[#58a6ff]", label: "INCOMPLETE FLOW" },
+  CAPABILITY_ONLY: { bg: "bg-[#2d2a1a]", text: "text-[#e3b341]", label: "POTENTIAL SIGNAL" },
+  VERIFIED_FLOW:   { bg: "bg-[#2d1a1a]", text: "text-[#f97583]", label: "CONFIRMED DATA" },
+  INCOMPLETE_FLOW: { bg: "bg-[#1a1f2d]", text: "text-[#58a6ff]", label: "PARTIAL MATCH" },
 };
 
 const DPO_COLOUR_ACCENT: Record<string, string> = {
@@ -177,10 +188,10 @@ const DPO_RISK_STYLES: Record<string, { bg: string; text: string; border: string
 };
 
 const ACTION_STYLES: Record<DPOActionType, { bg: string; text: string; border: string; label: string; icon: string }> = {
-  DPIA:        { bg: "bg-[#1a1f2d]", text: "text-[#58a6ff]", border: "border-[#58a6ff]/30", label: "DPIA NEEDED", icon: "📋" },
-  CODE_CHANGE: { bg: "bg-[#2d2a1a]", text: "text-[#e3b341]", border: "border-[#e3b341]/30", label: "CODE CHANGE", icon: "🛠" },
-  POLICY:      { bg: "bg-[#1a1a2d]", text: "text-[#bc8cff]", border: "border-[#bc8cff]/30", label: "POLICY",      icon: "📝" },
-  REVIEW:      { bg: "bg-[#1a2828]", text: "text-[#56d364]", border: "border-[#56d364]/30", label: "REVIEW",      icon: "🔍" },
+  DPIA:        { bg: "bg-[#1a1f2d]", text: "text-[#58a6ff]", border: "border-[#58a6ff]/30", label: "Assessment recommended", icon: "📋" },
+  CODE_CHANGE: { bg: "bg-[#2d2a1a]", text: "text-[#e3b341]", border: "border-[#e3b341]/30", label: "Fix needed in code",       icon: "🛠" },
+  POLICY:      { bg: "bg-[#1a1a2d]", text: "text-[#bc8cff]", border: "border-[#bc8cff]/30", label: "Policy or process needed", icon: "📝" },
+  REVIEW:      { bg: "bg-[#1a2828]", text: "text-[#56d364]", border: "border-[#56d364]/30", label: "Needs review",             icon: "🔍" },
 };
 
 const PRIORITY_DOT: Record<string, string> = {
@@ -329,10 +340,10 @@ function AuditSummaryPanel({ summary }: { summary: AuditSummary }) {
       {/* Stat row */}
       <div className="grid grid-cols-4 divide-x divide-[#21262d]">
         {[
-          { label: "Verified Flows", value: summary.verifiedFlowCount, highlight: summary.verifiedFlowCount > 0 },
-          { label: "External Transfers", value: summary.externalTransferCount, highlight: summary.externalTransferCount > 0 },
-          { label: "Storage Flows", value: summary.storageCount, highlight: summary.storageCount > 0 },
-          { label: "Potential Patterns", value: summary.potentialPatternCount, highlight: false },
+          { label: "Data movements", value: summary.verifiedFlowCount, highlight: summary.verifiedFlowCount > 0 },
+          { label: "External transfers", value: summary.externalTransferCount, highlight: summary.externalTransferCount > 0 },
+          { label: "Storage flows", value: summary.storageCount, highlight: summary.storageCount > 0 },
+          { label: "Potential signals", value: summary.potentialPatternCount, highlight: false },
         ].map(({ label, value, highlight }) => (
           <div key={label} className="px-4 py-3 text-center">
             <p
@@ -436,7 +447,7 @@ function AuditCardPanel({ card, scanId, mitigations = [], onRefresh }: AuditCard
               MITIGATED
             </span>
           )}
-          <span className="text-[10px] text-[#484f58]">{confidencePct(card.confidence)} conf.</span>
+          <span className="text-[10px] text-[#484f58]">{confidenceLabel(card.confidence)}</span>
           <span className="text-[10px] font-medium uppercase" style={{ color: isMitigated ? "#3fb950" : riskColor }}>
             {card.riskLevel}
           </span>
@@ -473,7 +484,7 @@ function AuditCardPanel({ card, scanId, mitigations = [], onRefresh }: AuditCard
       {/* Two-column: flagged reasons + not true */}
       <div className="grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x divide-[#21262d]">
         <div className="px-4 py-3">
-          <p className="text-[10px] text-[#484f58] uppercase tracking-widest mb-1.5">Why flagged</p>
+          <p className="text-[10px] text-[#484f58] uppercase tracking-widest mb-1.5">Why we flagged this</p>
           <ul className="space-y-1">
             {card.whyThisWasFlagged.map((r, i) => (
               <li key={i} className="flex items-start gap-1.5 text-xs text-[#8b949e]">
@@ -484,7 +495,7 @@ function AuditCardPanel({ card, scanId, mitigations = [], onRefresh }: AuditCard
           </ul>
         </div>
         <div className="px-4 py-3">
-          <p className="text-[10px] text-[#484f58] uppercase tracking-widest mb-1.5">What is NOT true</p>
+          <p className="text-[10px] text-[#484f58] uppercase tracking-widest mb-1.5">What we did NOT confirm</p>
           <ul className="space-y-1">
             {card.whatIsNOTTrue.map((r, i) => (
               <li key={i} className="flex items-start gap-1.5 text-xs text-[#8b949e]">
@@ -817,7 +828,7 @@ function ScanChatPanel({ scanId, repoName, riskLevel, verifiedFlowCount }: ScanC
   );
 }
 
-// ─── Potential patterns (old-style findings, not verified flows) ───────────────
+// ─── Potential signals (capability patterns, not confirmed flows) ──────────────
 
 function PotentialPatterns({ findings }: { findings: Finding[] }) {
   const potential = findings.filter((f) => !f.isVerifiedFlow);
@@ -828,12 +839,12 @@ function PotentialPatterns({ findings }: { findings: Finding[] }) {
       <div className="px-4 py-3 border-b border-[#21262d] flex items-center gap-2">
         <Info className="h-3.5 w-3.5 text-[#484f58]" />
         <h3 className="text-xs text-[#8b949e] uppercase tracking-widest font-medium">
-          Capability Patterns ({potential.length}) — Not Verified Flows
+          Potential signals ({potential.length}) — not confirmed risks
         </h3>
       </div>
       <div className="px-4 py-2.5 bg-[#0d1117] border-b border-[#21262d]">
         <p className="text-xs text-[#484f58]">
-          These patterns indicate capability (a library or API is present) but no direct user input → sink flow was proven. They do not contribute to the GDPR risk score.
+          These libraries or patterns are present in the code, but we could not trace personal data flowing through them. They are not scored risks.
         </p>
       </div>
       <div className="divide-y divide-[#21262d] max-h-72 overflow-auto">
@@ -850,7 +861,7 @@ function PotentialPatterns({ findings }: { findings: Finding[] }) {
                 <span className="text-xs text-[#6e7681] font-mono truncate">{f.type}</span>
               </div>
               <span className="text-[10px] text-[#484f58] shrink-0">
-                {f.confidence != null ? `${confidencePct(f.confidence)} conf.` : "capability"}
+                {f.confidence != null ? confidenceLabel(f.confidence) : "signal only"}
               </span>
             </div>
             <p className="text-xs text-[#484f58] font-mono mt-0.5">
@@ -859,6 +870,35 @@ function PotentialPatterns({ findings }: { findings: Finding[] }) {
             <p className="text-xs font-mono bg-[#0d1117] text-[#6e7681] px-2 py-1 rounded mt-1 truncate">
               {f.evidence}
             </p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Vibe check warnings panel ────────────────────────────────────────────────
+
+function VibeChecksPanel({ vibeChecks }: { vibeChecks: VibeCheck[] }) {
+  if (vibeChecks.length === 0) return null;
+  return (
+    <div className="bg-[#161b22] border border-[#e3b341]/30 rounded-lg overflow-hidden">
+      <div className="px-4 py-3 border-b border-[#e3b341]/20 flex items-center gap-2">
+        <AlertTriangle className="h-3.5 w-3.5 text-[#e3b341]" />
+        <h3 className="text-xs text-[#e3b341] uppercase tracking-widest font-medium">
+          Things to check manually ({vibeChecks.length})
+        </h3>
+      </div>
+      <div className="px-4 py-2.5 bg-[#0d1117] border-b border-[#21262d]">
+        <p className="text-xs text-[#484f58]">
+          These patterns were detected automatically but need your judgement to assess. They are reminders, not scored risks.
+        </p>
+      </div>
+      <div className="divide-y divide-[#21262d]">
+        {vibeChecks.map((vc) => (
+          <div key={vc.id} className="px-4 py-3">
+            <p className="text-xs font-medium text-[#e3b341] mb-1">{vc.title}</p>
+            <p className="text-xs text-[#8b949e] leading-relaxed">{vc.note}</p>
           </div>
         ))}
       </div>
@@ -878,6 +918,8 @@ export default function ScanDetail() {
     query: { enabled: !!id, queryKey: getGetScanQueryKey(id) },
   });
 
+  const [showReport, setShowReport] = useState(false);
+
   // The API returns extra fields beyond the Zod schema — cast to access them
   const scan = scanBase as (typeof scanBase & {
     verifiedFlows?: VerifiedFlow[];
@@ -886,6 +928,7 @@ export default function ScanDetail() {
     mitigations?: Mitigation[];
     mitigatedScore?: number;
     mitigatedRiskLevel?: string;
+    vibeChecks?: VibeCheck[];
   }) | undefined;
 
   const deleteScan = useDeleteScan();
@@ -936,6 +979,7 @@ export default function ScanDetail() {
   const auditCards = scan.auditCards ?? [];
   const auditSummary = scan.auditSummary ?? null;
   const mitigations = scan.mitigations ?? [];
+  const vibeChecks = (scan.vibeChecks ?? []) as VibeCheck[];
   const mitigatedScore = scan.mitigatedScore ?? scan.gdprScore ?? 0;
   const mitigatedRiskLevel = scan.mitigatedRiskLevel ?? scan.riskLevel ?? "LOW";
   const hasMitigations = mitigations.length > 0;
@@ -970,15 +1014,28 @@ export default function ScanDetail() {
             </a>
           </div>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={handleDelete}
-          disabled={deleteScan.isPending}
-          className="text-[#8b949e] hover:text-[#f97583] hover:bg-[#3d1a1a]/50"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </Button>
+        <div className="flex items-center gap-2">
+          {scan.status === "done" && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowReport(true)}
+              className="text-[#8b949e] hover:text-[#e6edf3] hover:bg-[#21262d] gap-1.5"
+            >
+              <FileDown className="h-3.5 w-3.5" />
+              <span className="text-xs hidden sm:inline">Download Report</span>
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleDelete}
+            disabled={deleteScan.isPending}
+            className="text-[#8b949e] hover:text-[#f97583] hover:bg-[#3d1a1a]/50"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        </div>
       </div>
 
       {/* Pending state */}
@@ -1043,7 +1100,7 @@ export default function ScanDetail() {
                 </div>
               </div>
               <div>
-                <p className="text-xs text-[#484f58] uppercase tracking-widest">Verified Flows</p>
+                <p className="text-xs text-[#484f58] uppercase tracking-widest">Data movements</p>
                 <div className="flex items-baseline gap-1.5 mt-1">
                   <p className="text-lg font-semibold" style={{ color: verifiedFlows.length > 0 ? "#f97583" : "#3fb950" }}>
                     {verifiedFlows.length}
@@ -1085,15 +1142,15 @@ export default function ScanDetail() {
           {/* Audit summary */}
           {auditSummary && <AuditSummaryPanel summary={auditSummary} />}
 
-          {/* Verified flow audit cards */}
+          {/* Confirmed data movement audit cards */}
           {auditCards.length > 0 && (
             <div className="space-y-4">
               <div className="flex items-center justify-between px-1">
                 <h3 className="text-xs text-[#8b949e] uppercase tracking-widest font-medium">
-                  Verified Data Flows ({auditCards.length})
+                  Confirmed data movements ({auditCards.length})
                 </h3>
                 <p className="text-[10px] text-[#484f58]">
-                  Click "How will you reduce this risk?" on each flow to add controls
+                  Click "How will you reduce this risk?" on each to add controls
                 </p>
               </div>
               {auditCards.map((card, i) => (
@@ -1165,16 +1222,19 @@ export default function ScanDetail() {
             </div>
           )}
 
-          {/* Capability patterns (not verified flows) */}
+          {/* Potential signals (capability patterns, not confirmed flows) */}
           <PotentialPatterns findings={findings} />
+
+          {/* Things to check manually */}
+          <VibeChecksPanel vibeChecks={vibeChecks} />
 
           {/* All clean */}
           {auditCards.length === 0 && findings.length === 0 && (
             <div className="bg-[#161b22] border border-[#21262d] rounded-lg px-6 py-8 text-center">
               <CheckCircle2 className="h-8 w-8 text-[#3fb950] mx-auto mb-3" />
-              <p className="text-sm text-[#3fb950] font-medium">No verified GDPR data flows detected.</p>
+              <p className="text-sm text-[#3fb950] font-medium">No confirmed data movements detected.</p>
               <p className="text-xs text-[#484f58] mt-1">
-                No confirmed user input → data sink flows were found in this repository.
+                We could not trace personal data flowing to a storage location or external service in this repository.
               </p>
             </div>
           )}
@@ -1187,6 +1247,28 @@ export default function ScanDetail() {
             verifiedFlowCount={verifiedFlows.length}
           />
         </>
+      )}
+
+      {/* PDF / print report modal */}
+      {showReport && (
+        <GDPRReportModal
+          scan={{
+            repoName: scan.repoName,
+            githubUrl: scan.githubUrl ?? "",
+            gdprScore: scan.gdprScore,
+            riskLevel: scan.riskLevel,
+            completedAt: scan.completedAt,
+          }}
+          auditCards={auditCards}
+          findings={findings}
+          deps={deps}
+          mitigations={mitigations}
+          vibeChecks={vibeChecks}
+          auditSummary={auditSummary}
+          mitigatedScore={mitigatedScore}
+          mitigatedRiskLevel={mitigatedRiskLevel}
+          onClose={() => setShowReport(false)}
+        />
       )}
     </div>
   );
