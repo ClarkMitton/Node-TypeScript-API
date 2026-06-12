@@ -81,11 +81,19 @@ interface ThirdPartyService {
   residencyKnown: boolean;
 }
 
+interface SecurityNote {
+  area: string;
+  status: "attention" | "info" | "cannot-check";
+  detail: string;
+  mapsTo: string;
+}
+
 interface AuditSummary {
   dpoSummary?: DPOSummary;
   dpiaScreening?: DPIAScreening;
   thirdPartyServices?: ThirdPartyService[];
   residencyNotes?: string[];
+  security?: SecurityNote[];
 }
 
 interface ScanInfo {
@@ -377,7 +385,11 @@ export function GDPRReportModal({
   const potentialSignals = findings.filter((f) => !f.isVerifiedFlow);
   const services = auditSummary?.thirdPartyServices ?? [];
   const residencyNotes = auditSummary?.residencyNotes ?? [];
+  const securityNotes = auditSummary?.security ?? [];
   const hasServices = services.length > 0 || deps.length > 0;
+  // Section numbers (sections 4/5 are conditional, so later headings shift).
+  const securitySectionNum = (vibeChecks.length > 0 ? 6 : hasServices ? 5 : 4);
+  const riskSectionNum = securityNotes.length > 0 ? securitySectionNum + 1 : securitySectionNum;
   const scoreReduced = mitigatedScore < (scan.gdprScore ?? 0);
   const scanDate = scan.completedAt
     ? new Date(scan.completedAt).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })
@@ -693,9 +705,35 @@ export function GDPRReportModal({
           </>
         )}
 
-        {/* ── Section 6: Risk summary ── */}
+        {/* ── Security & Cyber Essentials notes ── */}
+        {securityNotes.length > 0 && (
+          <>
+            <hr style={S.sectionRule} />
+            <h2 style={S.h2}>{securitySectionNum}. Security &amp; Cyber Essentials notes</h2>
+            <p style={S.para}>
+              Cyber Essentials is a UK security certification (firewalls, secure configuration, access
+              control, patching, malware protection). This scan can't certify it, but the
+              security-relevant signals it can see are mapped below to your IT System Requirements
+              Assessment.
+            </p>
+            {securityNotes.map((n, i) => (
+              <div key={i} style={{ padding: "10px 0", borderBottom: "1px solid #f1f3f5" }}>
+                <p style={{ margin: 0, fontWeight: 700, fontSize: 13 }}>
+                  {n.area}
+                  <span style={{ ...S.label, marginLeft: 8 }}>
+                    {n.status === "attention" ? "CHECK" : n.status === "cannot-check" ? "NOT SEEN" : "INFO"}
+                  </span>
+                </p>
+                <p style={{ margin: "3px 0 0 0", fontSize: 13, color: "#374151" }}>{n.detail}</p>
+                <p style={{ margin: "2px 0 0 0", fontSize: 11, color: "#9ca3af" }}>Maps to: {n.mapsTo}</p>
+              </div>
+            ))}
+          </>
+        )}
+
+        {/* ── Risk summary ── */}
         <hr style={S.sectionRule} />
-        <h2 style={S.h2}>{vibeChecks.length > 0 ? "6" : hasServices ? "5" : "4"}. Risk summary</h2>
+        <h2 style={S.h2}>{riskSectionNum}. Risk summary</h2>
 
         <div style={{ borderLeft: `4px solid ${riskColor(scoreReduced ? mitigatedRiskLevel : scan.riskLevel)}`, paddingLeft: 16, marginBottom: 20 }}>
           <p style={{ ...S.para, margin: 0 }}>

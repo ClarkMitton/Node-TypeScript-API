@@ -175,6 +175,22 @@ export interface DPIAScreening {
   questions: ClarifyingQuestion[];
 }
 
+// A single line in the "Security & Cyber Essentials" mapping. These map the
+// security-relevant signals the code scan CAN see onto the org's IT System
+// Requirements Assessment / Cyber Essentials themes — and are explicit about the
+// controls a code scan cannot see (firewalls, patching, MFA, malware).
+export interface SecurityNote {
+  // Heading, e.g. "User access control" or "Secure configuration".
+  area: string;
+  // attention = a signal to act on; info = neutral context; cannot-check = the
+  // scan cannot see this, confirm it separately.
+  status: "attention" | "info" | "cannot-check";
+  detail: string;
+  // Which standard / form section this maps to (Cyber Essentials control, NCSC
+  // cloud principle, DfE standard, GDPR article).
+  mapsTo: string;
+}
+
 export interface AuditSummary {
   repo: string;
   overallRisk: RiskLevel;
@@ -197,6 +213,10 @@ export interface AuditSummary {
   // Camera / microphone / media-capture capability (photos/audio of people →
   // possible biometric special-category and children's data).
   mediaCapture?: { detected: boolean; evidence: ServiceEvidence[] };
+  // Security / Cyber Essentials mapping: security-relevant signals the scan can
+  // see, mapped to the IT System Requirements Assessment, plus the controls a
+  // code scan cannot see.
+  security?: SecurityNote[];
 }
 
 export interface DependencyFinding {

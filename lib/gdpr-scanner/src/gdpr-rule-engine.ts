@@ -15,6 +15,7 @@ import type {
   DPIAScreening,
   ThirdPartyService,
   ServiceEvidence,
+  SecurityNote,
 } from "./types.js";
 
 type MediaCapture = { detected: boolean; evidence: ServiceEvidence[] };
@@ -703,6 +704,86 @@ function buildResidencyNotes(services: ThirdPartyService[]): string[] {
   });
 }
 
+/**
+ * Map the security-relevant signals the scan CAN see onto the IT System
+ * Requirements Assessment / Cyber Essentials themes — and be explicit about the
+ * controls a code scan cannot see. This does not certify Cyber Essentials; it
+ * gives a head start on the cloud/security side of the assessment.
+ */
+function buildSecurityNotes(
+  services: ThirdPartyService[],
+  deps: DependencyFinding[],
+): SecurityNote[] {
+  const notes: SecurityNote[] = [];
+
+  // Access control — backend/data platforms with row-level access (RLS).
+  const dataPlatforms = services.filter((s) => s.category === "Cloud data/storage");
+  const usesSupabaseOrFirebase =
+    dataPlatforms.some((s) => /supabase|firebase/i.test(s.name)) ||
+    deps.some((d) => /@supabase\/|firebase/i.test(d.name));
+  if (usesSupabaseOrFirebase) {
+    notes.push({
+      area: "User access control",
+      status: "attention",
+      detail:
+        "A managed database/back-end (e.g. Supabase/Firebase) was detected. Confirm Row Level Security (or equivalent rules) is enabled on every table holding personal data, that service-role keys are never exposed to the browser, and that staff accounts use least-privilege and MFA.",
+      mapsTo: "Cyber Essentials: User access control · NCSC Cloud Security Principle 9 · GDPR Art. 32",
+    });
+  } else if (dataPlatforms.length > 0) {
+    notes.push({
+      area: "User access control",
+      status: "attention",
+      detail:
+        "A cloud data store was detected. Confirm access is restricted to authorised users on a least-privilege basis, with MFA on admin accounts.",
+      mapsTo: "Cyber Essentials: User access control · NCSC Cloud Security Principle 9",
+    });
+  }
+
+  // Secure configuration — secrets / API keys configured via env or in code.
+  const credentialServices = services.filter(
+    (s) => s.detectedVia.includes("env-var") || /unrecognised api credentials/i.test(s.name),
+  );
+  if (credentialServices.length > 0) {
+    notes.push({
+      area: "Secure configuration",
+      status: "attention",
+      detail:
+        "API keys / secrets are configured for one or more services. Confirm secrets are NOT committed to the repository (use environment variables/secret storage), are rotated periodically, and grant the minimum scope needed. Remove any default or shared credentials.",
+      mapsTo: "Cyber Essentials: Secure configuration · NCSC Cloud Security Principle 10",
+    });
+  }
+
+  // Supplier assurance — every external service is a supplier to vet.
+  if (services.length > 0) {
+    const names = [...new Set(services.map((s) => s.name))].slice(0, 8).join(", ");
+    notes.push({
+      area: "Supplier assurance",
+      status: "attention",
+      detail:
+        `External suppliers were detected (${names}). For each, confirm they hold Cyber Essentials (or an equivalent such as ISO 27001/SOC 2), put a Data Processing Agreement in place, and record them in your supplier due-diligence.`,
+      mapsTo: "PPN 014/25 supplier assurance · DfE Cloud solution standards",
+    });
+    notes.push({
+      area: "Data residency",
+      status: "attention",
+      detail:
+        "Confirm where each external service stores and processes personal data. A non-UK/EEA location needs a documented international-transfer safeguard.",
+      mapsTo: "NCSC Cloud Security Principle 2 · GDPR Art. 44–49 · IT Assessment: data residency",
+    });
+  }
+
+  // Controls a code scan cannot see — always state these so nothing is implied.
+  notes.push({
+    area: "Not visible to a code scan",
+    status: "cannot-check",
+    detail:
+      "Firewalls, security update management (patching), malware protection, device/endpoint security and account MFA are organisation/infrastructure controls that cannot be seen in application code. Confirm these separately as part of your Cyber Essentials certification.",
+    mapsTo: "Cyber Essentials: Firewalls · Security update management · Malware protection",
+  });
+
+  return notes;
+}
+
 // ─── Audit summary generation ──────────────────────────────────────────────────
 
 function buildAuditSummary(
@@ -751,6 +832,7 @@ function buildAuditSummary(
   const dpoSummary = buildDPOSummary(flows, potentialFindings, deps, services, mediaCapture, overallRisk);
   const dpiaScreening = buildDPIAScreening(flows, deps, services, mediaCapture);
   const residencyNotes = buildResidencyNotes(services);
+  const security = buildSecurityNotes(services, deps);
 
   return {
     repo,
@@ -769,6 +851,7 @@ function buildAuditSummary(
     thirdPartyServices: services,
     residencyNotes,
     mediaCapture,
+    security,
   };
 }
 

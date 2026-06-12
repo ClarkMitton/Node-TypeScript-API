@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
-import { useGetScan, getGetScanQueryKey, useDeleteScan, getListScansQueryKey, getGetScanStatsQueryKey, useCreateOpenaiConversation, getListOpenaiConversationsQueryKey } from "@workspace/api-client-react";
+import { useGetScan, getGetScanQueryKey, useDeleteScan, getListScansQueryKey, getGetScanStatsQueryKey, useCreateOpenaiConversation, getListOpenaiConversationsQueryKey, useListDocuments } from "@workspace/api-client-react";
 import { API_BASE } from "@/lib/api-base";
 import { RiskBadge } from "@/components/risk-badge";
 import { ScoreGauge } from "@/components/score-gauge";
@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, Loader2, Trash2, Github, AlertCircle, CheckCircle2, ShieldAlert, ArrowRight, Info, FileText, Bot, Send, User, ClipboardList, AlertTriangle, Plus, X, ChevronDown, ChevronUp, Shield, FileDown, Eye } from "lucide-react";
 import { GDPRReportModal } from "@/components/gdpr-report";
+import { ChatMarkdown } from "@/components/chat-markdown";
 import { Link } from "wouter";
 
 // ─── Local types for new fields ───────────────────────────────────────────────
@@ -127,6 +128,13 @@ type ThirdPartyService = {
   residencyKnown: boolean;
 };
 
+type SecurityNote = {
+  area: string;
+  status: "attention" | "info" | "cannot-check";
+  detail: string;
+  mapsTo: string;
+};
+
 type AuditSummary = {
   repo: string;
   overallRisk: string;
@@ -143,6 +151,7 @@ type AuditSummary = {
   dpiaScreening?: DPIAScreening;
   thirdPartyServices?: ThirdPartyService[];
   residencyNotes?: string[];
+  security?: SecurityNote[];
 };
 
 type MitigationType =
@@ -220,6 +229,30 @@ const CATEGORY_COLORS: Record<string, string> = {
   dependency: "#56d364",
   static: "#8b949e",
 };
+
+// Translate a technical token from a flow chain (e.g. "req.body", "fetch()")
+// into words a non-technical reader can follow.
+function plainToken(token: string): string {
+  const t = token.toLowerCase();
+  if (/openai|anthropic|claude|gpt|gemini|elevenlabs|\bai\b|llm/.test(t)) return "an AI service";
+  if (/req\.(body|query|params)|form|input|payload|request/.test(t)) return "information a user submits";
+  if (/localstorage|sessionstorage|cookie/.test(t)) return "the user's browser storage";
+  if (/fetch|axios|http|api|post\(|endpoint|webhook/.test(t)) return "an external service over the internet";
+  if (/insert|save|create|db|database|prisma|supabase|mongo|sql|knex|drizzle|firestore/.test(t)) return "a database";
+  if (/console\.|log|logger|winston|pino/.test(t)) return "the application's logs";
+  if (/file|fs\.|write/.test(t)) return "a file on the server";
+  return `"${token}"`;
+}
+
+// One-line plain-English version of a "source → sink" flow chain.
+function plainFlowCaption(flow: string): string {
+  const parts = flow.split(" → ").map((p) => p.trim()).filter(Boolean);
+  if (parts.length < 2) return "";
+  const from = plainToken(parts[0]!);
+  const to = plainToken(parts[parts.length - 1]!);
+  if (from === to) return "";
+  return `In plain English: ${from.charAt(0).toUpperCase() + from.slice(1)} is sent to ${to}.`;
+}
 
 function confidencePct(c: number): string {
   return `${Math.round(c * 100)}%`;
@@ -558,6 +591,48 @@ function ThirdPartyServicesPanel({
   );
 }
 
+function SecurityNotesPanel({ notes }: { notes: SecurityNote[] }) {
+  if (notes.length === 0) return null;
+  const STATUS: Record<SecurityNote["status"], { dot: string; label: string }> = {
+    attention: { dot: "bg-[#d29922]", label: "CHECK" },
+    info: { dot: "bg-[#58a6ff]", label: "INFO" },
+    "cannot-check": { dot: "bg-[#484f58]", label: "NOT SEEN" },
+  };
+  return (
+    <CollapsibleSection
+      title="Security & Cyber Essentials notes"
+      right={`${notes.length}`}
+      icon={<Shield className="h-3.5 w-3.5 text-[#58a6ff]" />}
+    >
+      <div className="px-5 py-4 border-b border-[#21262d]">
+        <p className="text-xs text-[#8b949e] leading-relaxed">
+          Cyber Essentials is a UK security certification (firewalls, secure configuration, access
+          control, patching, malware protection). This scan can't certify it, but here are the
+          security-relevant signals it can see, mapped to your IT System Requirements Assessment.
+        </p>
+      </div>
+      <div className="divide-y divide-[#21262d]">
+        {notes.map((n, i) => {
+          const s = STATUS[n.status];
+          return (
+            <div key={i} className="px-5 py-3.5">
+              <div className="flex items-center gap-2 mb-1">
+                <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${s.dot}`} />
+                <span className="text-sm text-[#e6edf3] font-semibold">{n.area}</span>
+                <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-[#21262d] text-[#8b949e]">
+                  {s.label}
+                </span>
+              </div>
+              <p className="text-xs text-[#c9d1d9] leading-relaxed">{n.detail}</p>
+              <p className="mt-1 text-[10px] text-[#484f58]">Maps to: {n.mapsTo}</p>
+            </div>
+          );
+        })}
+      </div>
+    </CollapsibleSection>
+  );
+}
+
 // ─── Audit summary panel ──────────────────────────────────────────────────────
 
 function AuditSummaryPanel({ summary }: { summary: AuditSummary }) {
@@ -854,6 +929,9 @@ function AuditCardPanel({ card, scanId, mitigations = [], reviewAnswers, resolve
             </span>
           ))}
         </div>
+        {plainFlowCaption(card.flow) && (
+          <p className="text-xs text-[#8b949e] mt-2 leading-relaxed">{plainFlowCaption(card.flow)}</p>
+        )}
       </div>
 
       {/* Evidence */}
@@ -1001,6 +1079,12 @@ function AuditCardPanel({ card, scanId, mitigations = [], reviewAnswers, resolve
               />
             </div>
 
+            <p className="text-[10px] text-[#8b949e] leading-relaxed flex items-start gap-1.5">
+              <Info className="h-3 w-3 shrink-0 mt-0.5 text-[#d29922]" />
+              The score reduction reflects what you've told us — the scanner can't verify it. Keep
+              evidence of each control (documents, dates, who approved it) for your records.
+            </p>
+
             {/* Actions */}
             <div className="flex gap-2">
               <Button
@@ -1044,6 +1128,13 @@ interface ScanChatPanelProps {
   verifiedFlowCount: number;
 }
 
+const SUGGESTED_PROMPTS = [
+  "What should I fix first?",
+  "Do I need a DPIA for this app?",
+  "Draft an email to a vendor asking about their DPA and data residency",
+  "Explain this report for a non-technical manager",
+];
+
 function ScanChatPanel({ scanId, repoName, riskLevel, verifiedFlowCount }: ScanChatPanelProps) {
   const qc = useQueryClient();
   const createConv = useCreateOpenaiConversation();
@@ -1058,6 +1149,40 @@ function ScanChatPanel({ scanId, repoName, riskLevel, verifiedFlowCount }: ScanC
   const [isStreaming, setIsStreaming] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Uploaded compliance documents are automatically given to the AI as context.
+  const { data: docs } = useListDocuments();
+  const docIds = (docs ?? []).map((d) => d.id);
+
+  // Restore the previous conversation for this scan so the visible history
+  // matches what the server already remembers.
+  useEffect(() => {
+    if (!convId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/openai/conversations/${convId}/messages`);
+        if (!res.ok) {
+          // Conversation was deleted — start fresh next send.
+          if (res.status === 404) {
+            localStorage.removeItem(storageKey);
+            setConvId(null);
+          }
+          return;
+        }
+        const msgs = (await res.json()) as { id: number; role: string; content: string }[];
+        if (!cancelled && msgs.length > 0) {
+          setMessages(msgs.map((m) => ({
+            id: String(m.id),
+            role: m.role === "assistant" ? "assistant" : "user",
+            content: m.content,
+          })));
+        }
+      } catch { /* leave the panel empty; sending still works */ }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [convId]);
 
   const riskWord = riskLevel === "HIGH" ? "high" : riskLevel === "MEDIUM" ? "medium" : "low";
   const flowWord = verifiedFlowCount === 0
@@ -1088,9 +1213,9 @@ function ScanChatPanel({ scanId, repoName, riskLevel, verifiedFlowCount }: ScanC
     });
   }
 
-  async function sendMessage() {
-    if (!input.trim() || isStreaming) return;
-    const userContent = input.trim();
+  async function sendMessage(promptOverride?: string) {
+    const userContent = (promptOverride ?? input).trim();
+    if (!userContent || isStreaming) return;
     setInput("");
 
     const userMsg: ChatMsg = { id: `u-${Date.now()}`, role: "user", content: userContent };
@@ -1104,7 +1229,7 @@ function ScanChatPanel({ scanId, repoName, riskLevel, verifiedFlowCount }: ScanC
       const res = await fetch(`${base}/api/openai/conversations/${cid}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: userContent, scanId, documentIds: [] }),
+        body: JSON.stringify({ content: userContent, scanId, documentIds: docIds }),
       });
       if (!res.body) throw new Error("No response body");
 
@@ -1122,10 +1247,17 @@ function ScanChatPanel({ scanId, repoName, riskLevel, verifiedFlowCount }: ScanC
           const payload = line.slice(6);
           if (payload === "[DONE]") continue;
           try {
-            const parsed = JSON.parse(payload) as { content?: string };
+            const parsed = JSON.parse(payload) as { content?: string; error?: string };
             if (parsed.content) {
               setMessages((prev) =>
                 prev.map((m) => m.id === asstMsg.id ? { ...m, content: m.content + parsed.content! } : m),
+              );
+            }
+            if (parsed.error) {
+              setMessages((prev) =>
+                prev.map((m) => m.id === asstMsg.id
+                  ? { ...m, content: m.content || "Sorry — the assistant couldn't reply just now. Please try again in a moment." }
+                  : m),
               );
             }
           } catch { /* skip */ }
@@ -1162,26 +1294,25 @@ function ScanChatPanel({ scanId, repoName, riskLevel, verifiedFlowCount }: ScanC
           <div className="shrink-0 w-6 h-6 rounded-full bg-[#21262d] flex items-center justify-center">
             <Bot className="h-3 w-3 text-[#58a6ff]" />
           </div>
-          <div className="bg-[#0d1117] border border-[#21262d] rounded-lg px-3 py-2.5 text-sm text-[#c9d1d9] leading-relaxed max-w-[85%]">
-            {welcomeText.split("\n").map((line, i) =>
-              line.startsWith("**") ? (
-                <p key={i} className={i > 0 ? "mt-2" : ""}>
-                  {line.replace(/\*\*([^*]+)\*\*/g, "$1").split(/(\*\*[^*]+\*\*)/).map((part, j) =>
-                    /^\*\*/.test(part) ? <strong key={j} className="text-[#e6edf3]">{part.replace(/\*\*/g, "")}</strong> : part
-                  )}
-                </p>
-              ) : line === "" ? <br key={i} /> : (
-                <p key={i} className={i > 0 ? "mt-1" : ""}>
-                  {line.split(/(\*\*[^*]+\*\*)/).map((part, j) =>
-                    part.startsWith("**") && part.endsWith("**")
-                      ? <strong key={j} className="text-[#e6edf3]">{part.replace(/\*\*/g, "")}</strong>
-                      : part
-                  )}
-                </p>
-              )
-            )}
+          <div className="bg-[#0d1117] border border-[#21262d] rounded-lg px-3 py-2.5 max-w-[85%]">
+            <ChatMarkdown content={welcomeText} />
           </div>
         </div>
+        {/* Suggested prompts */}
+        {messages.length === 0 && (
+          <div className="flex flex-wrap gap-1.5 mt-3 ml-9">
+            {SUGGESTED_PROMPTS.map((p) => (
+              <button
+                key={p}
+                onClick={() => void sendMessage(p)}
+                disabled={isStreaming}
+                className="text-[11px] px-2.5 py-1 rounded-full border border-[#30363d] bg-[#0d1117] text-[#8b949e] hover:border-[#58a6ff] hover:text-[#58a6ff] transition-colors"
+              >
+                {p}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Conversation messages */}
@@ -1196,7 +1327,11 @@ function ScanChatPanel({ scanId, repoName, riskLevel, verifiedFlowCount }: ScanC
                 }
               </div>
               <div className={`max-w-[80%] rounded-lg px-3 py-2.5 text-sm leading-relaxed ${msg.role === "user" ? "bg-[#1f6feb]/20 text-[#c9d1d9]" : "bg-[#0d1117] border border-[#21262d] text-[#c9d1d9]"}`}>
-                <p className="whitespace-pre-wrap">{msg.content}</p>
+                {msg.role === "assistant" ? (
+                  <ChatMarkdown content={msg.content} />
+                ) : (
+                  <p className="whitespace-pre-wrap">{msg.content}</p>
+                )}
                 {msg.streaming && <span className="inline-block w-1 h-4 bg-[#58a6ff] animate-pulse ml-0.5 align-middle" />}
               </div>
             </div>
@@ -1231,7 +1366,10 @@ function ScanChatPanel({ scanId, repoName, riskLevel, verifiedFlowCount }: ScanC
             {isStreaming ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </Button>
         </div>
-        <p className="text-[10px] text-[#484f58] mt-1.5">Enter to send · Shift+Enter for new line</p>
+        <p className="text-[10px] text-[#484f58] mt-1.5">
+          Enter to send · Shift+Enter for new line
+          {docIds.length > 0 && ` · Using ${docIds.length} uploaded document${docIds.length > 1 ? "s" : ""} as context`}
+        </p>
       </div>
     </div>
   );
@@ -1596,6 +1734,11 @@ export default function ScanDetail() {
             />
           )}
 
+          {/* Security & Cyber Essentials notes */}
+          {auditSummary?.security && auditSummary.security.length > 0 && (
+            <SecurityNotesPanel notes={auditSummary.security} />
+          )}
+
           {/* DPIA screening + questions */}
           {auditSummary?.dpiaScreening && (
             <DPIAScreeningPanel
@@ -1654,6 +1797,9 @@ export default function ScanDetail() {
                         {flow.dataType}
                       </span>
                     </div>
+                    {plainFlowCaption(`${flow.source} → ${flow.sink}`) && (
+                      <p className="text-xs text-[#8b949e] mb-0.5">{plainFlowCaption(`${flow.source} → ${flow.sink}`)}</p>
+                    )}
                     <p className="text-xs text-[#484f58] font-mono">{flow.file}:{flow.line}</p>
                     <p className="text-xs text-[#484f58]">Confidence: {confidencePct(flow.confidence)}</p>
                   </div>
