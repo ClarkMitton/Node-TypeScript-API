@@ -13,27 +13,27 @@ import {
   GetOpenaiConversationResponse,
   ListOpenaiMessagesResponse,
 } from "@workspace/api-zod";
-import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
+import { logger } from "../lib/logger.js";
 
 const router: IRouter = Router();
 
-// Construct the OpenAI client lazily so the server can boot without an OpenAI
-// key. Only the chat route needs it; the rest of the API (scans, etc.) does not.
-let _openai: OpenAI | null = null;
-function getOpenAI(): OpenAI {
-  if (!_openai) {
-    const apiKey = process.env["AI_INTEGRATIONS_OPENAI_API_KEY"];
+// Chat is powered by Anthropic (the provisioned key in this deployment).
+// Constructed lazily so the server boots even without a key configured.
+const CHAT_MODEL = process.env["ANTHROPIC_MODEL"] ?? "claude-sonnet-4-6";
+
+let _anthropic: Anthropic | null = null;
+function getAnthropic(): Anthropic {
+  if (!_anthropic) {
+    const apiKey = process.env["ANTHROPIC_API_KEY"];
     if (!apiKey) {
       throw new Error(
-        "AI_INTEGRATIONS_OPENAI_API_KEY is not set — the chat endpoint is unavailable.",
+        "ANTHROPIC_API_KEY is not set — the chat endpoint is unavailable.",
       );
     }
-    _openai = new OpenAI({
-      apiKey,
-      baseURL: process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
-    });
+    _anthropic = new Anthropic({ apiKey });
   }
-  return _openai;
+  return _anthropic;
 }
 
 function buildSystemPrompt(
@@ -300,16 +300,14 @@ router.post("/openai/conversations/:id/messages", async (req, res): Promise<void
     .where(eq(messages.conversationId, params.data.id))
     .orderBy(asc(messages.createdAt));
 
-  const chatMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    {
-      role: "system",
-      content: buildSystemPrompt(scanContext, docTexts),
-    },
-    ...history.map((m) => ({
-      role: m.role as "user" | "assistant",
-      content: m.content,
-    })),
-  ];
+  // Anthropic takes the system prompt separately; messages are user/assistant
+  // only. The first message must be from the user — DB history always starts
+  // with the user's message, so this holds.
+  const systemPrompt = buildSystemPrompt(scanContext, docTexts);
+  const chatMessages: Anthropic.MessageParam[] = history.map((m) => ({
+    role: m.role === "assistant" ? "assistant" : "user",
+    content: m.content,
+  }));
 
   // Stream SSE response
   res.setHeader("Content-Type", "text/event-stream");
@@ -320,20 +318,27 @@ router.post("/openai/conversations/:id/messages", async (req, res): Promise<void
   let assistantContent = "";
 
   try {
-    const stream = await getOpenAI().chat.completions.create({
-      model: "gpt-4.1",
+    const stream = getAnthropic().messages.stream({
+      model: CHAT_MODEL,
+      max_tokens: 2048,
+      system: systemPrompt,
       messages: chatMessages,
-      stream: true,
     });
 
-    for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta?.content ?? "";
-      if (delta) {
-        assistantContent += delta;
-        res.write(`data: ${JSON.stringify({ content: delta })}\n\n`);
+    for await (const event of stream) {
+      if (
+        event.type === "content_block_delta" &&
+        event.delta.type === "text_delta"
+      ) {
+        const delta = event.delta.text;
+        if (delta) {
+          assistantContent += delta;
+          res.write(`data: ${JSON.stringify({ content: delta })}\n\n`);
+        }
       }
     }
   } catch (err) {
+    logger.error({ err }, "Anthropic chat stream failed");
     res.write(`data: ${JSON.stringify({ error: String(err) })}\n\n`);
   }
 
