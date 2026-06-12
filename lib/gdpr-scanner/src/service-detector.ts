@@ -87,6 +87,32 @@ const PROVIDERS: ProviderDef[] = [
 // Region hints we *can* sometimes read from the repo (rare — usually not present).
 const REGION_HINT = /\b((?:us|eu|ap|ca|sa|af|me)-(?:east|west|central|south|north|northeast|southeast)-\d|europe-\w+\d|us-\w+\d)\b/i;
 
+// ─── Generic "any outbound integration" detection ──────────────────────────────
+// Catches services NOT in the registry above, so the report never misses "data
+// may be going somewhere we don't recognise."
+
+// An env-var name that looks like a third-party credential or endpoint.
+const GENERIC_CREDENTIAL =
+  /\b([A-Z][A-Z0-9]{1,30})_(API_KEY|APIKEY|SECRET_KEY|SECRET|ACCESS_TOKEN|AUTH_TOKEN|CLIENT_SECRET|CLIENT_ID|WEBHOOK_URL|WEBHOOK|DSN|ACCESS_KEY_ID|PRIVATE_KEY|BEARER_TOKEN|API_TOKEN|API_URL|API_ENDPOINT|BASE_URL)\b/g;
+
+// Prefixes that are internal app secrets / framework noise, not a third party.
+const INTERNAL_PREFIX =
+  /^(NODE|VITE|NEXT|NUXT|REACT_APP|PUBLIC|APP|DATABASE|DB|POSTGRES|MYSQL|REDIS|JWT|SESSION|COOKIE|CSRF|ENCRYPTION|HASH|SALT|ADMIN|INTERNAL|SERVER|CLIENT|PORT|HOST|BASE|NEXTAUTH|AUTH|TEST|CI|GITHUB_TOKEN)$/;
+
+// A line that is making an outbound network call.
+const NETWORK_CALL = /\b(fetch|axios|http\.(get|post|request)|https\.(get|post|request)|XMLHttpRequest|\.get\(|\.post\(|got\(|ky\.|superagent|node-fetch)\b/;
+const URL_IN_LINE = /https?:\/\/([a-z0-9.-]+\.[a-z]{2,})(?::\d+)?/gi;
+
+// Hosts that are not data destinations (CDNs, fonts, schemas, registries, docs).
+const EXCLUDED_HOSTS =
+  /(^|\.)(w3\.org|schema\.org|json-schema\.org|github\.com|githubusercontent\.com|gitlab\.com|npmjs\.(org|com)|jsdelivr\.net|unpkg\.com|cdnjs\.cloudflare\.com|jquery\.com|bootstrapcdn\.com|fonts\.googleapis\.com|fonts\.gstatic\.com|gstatic\.com|tailwindcss\.com|localhost|example\.(com|org|net)|127\.0\.0\.1|0\.0\.0\.0|reactjs\.org|vitejs\.dev|nodejs\.org|mozilla\.org|wikipedia\.org|placeholder\.com|placehold\.co|via\.placeholder\.com|gravatar\.com|googleapis\.com|vercel\.app|netlify\.app)$/i;
+
+const MAX_GENERIC_HOSTS = 12;
+
+function isKnownProviderHost(host: string): boolean {
+  return PROVIDERS.some((p) => p.domains?.test(host));
+}
+
 const SKIP_DIRS = ["node_modules", ".git", "dist", "build", ".next", "coverage", "__pycache__"];
 const BINARY_EXTS = new Set([
   ".map", ".lock", ".sum", ".mod",
@@ -138,6 +164,11 @@ export async function detectServices(repoPath: string): Promise<ThirdPartyServic
     }
   }
 
+  // Generic (unrecognised) integrations: external domains called by the code, and
+  // credential-shaped env vars that don't belong to a known provider.
+  const genericHosts = new Map<string, ServiceEvidence>();
+  const genericCreds = new Map<string, ServiceEvidence>();
+
   for (const relFile of scanFiles) {
     const absFile = path.join(repoPath, relFile);
     let content: string;
@@ -165,6 +196,8 @@ export async function detectServices(repoPath: string): Promise<ThirdPartyServic
     }
 
     const lines = content.split("\n");
+    // Lines a known provider claimed — excluded from the generic pass below.
+    const claimedLines = new Set<number>();
 
     for (const def of PROVIDERS) {
       // Dependency match (root or nested package.json)
@@ -183,9 +216,11 @@ export async function detectServices(repoPath: string): Promise<ThirdPartyServic
 
         if (def.domains && def.domains.test(line)) {
           record(def, "endpoint", { file: relFile, line: i + 1, snippet: line.trim().slice(0, 160) }, region);
+          claimedLines.add(i);
         }
         if (def.envVars && def.envVars.test(line)) {
           record(def, "env-var", { file: relFile, line: i + 1, snippet: line.trim().slice(0, 160) }, region);
+          claimedLines.add(i);
         }
         // Deno / esm.sh / npm: import specifiers in code (not package.json)
         if (!isPackageJson && def.packages && /\b(import|require|from)\b/.test(line) && def.packages.test(line)) {
@@ -193,6 +228,65 @@ export async function detectServices(repoPath: string): Promise<ThirdPartyServic
         }
       }
     }
+
+    // ── Generic pass: unrecognised hosts and credential env vars ──────────────
+    if (!isPackageJson) {
+      for (let i = 0; i < lines.length; i++) {
+        if (claimedLines.has(i)) continue;
+        const line = lines[i]!;
+        if (line.length > 2000) continue;
+
+        // External domains in outbound-call lines
+        if (NETWORK_CALL.test(line)) {
+          URL_IN_LINE.lastIndex = 0;
+          let m: RegExpExecArray | null;
+          while ((m = URL_IN_LINE.exec(line)) !== null) {
+            const host = (m[1] ?? "").toLowerCase();
+            if (!host || EXCLUDED_HOSTS.test(host) || isKnownProviderHost(host)) continue;
+            if (!genericHosts.has(host) && genericHosts.size < MAX_GENERIC_HOSTS) {
+              genericHosts.set(host, { file: relFile, line: i + 1, snippet: line.trim().slice(0, 160) });
+            }
+          }
+        }
+
+        // Credential-shaped env vars not owned by a known provider
+        GENERIC_CREDENTIAL.lastIndex = 0;
+        let cm: RegExpExecArray | null;
+        while ((cm = GENERIC_CREDENTIAL.exec(line)) !== null) {
+          const prefix = cm[1] ?? "";
+          if (!prefix || INTERNAL_PREFIX.test(prefix)) continue;
+          if (!genericCreds.has(prefix)) {
+            genericCreds.set(prefix, { file: relFile, line: i + 1, snippet: line.trim().slice(0, 160) });
+          }
+        }
+      }
+    }
+  }
+
+  // Build a single "unrecognised credentials" entry, and one entry per unknown
+  // external host, so the report can say where data may be going.
+  if (genericCreds.size > 0) {
+    const evidence = [...genericCreds.values()].slice(0, MAX_EVIDENCE_PER_SERVICE);
+    const names = [...genericCreds.keys()].slice(0, 8).join(", ");
+    acc.set("__generic_creds__", {
+      name: `Unrecognised API credentials (${names})`,
+      category: "Other third-party",
+      isAI: false,
+      detectedVia: ["env-var"],
+      evidence,
+      residencyKnown: false,
+    });
+  }
+  for (const [host, ev] of genericHosts) {
+    if (acc.has(`host:${host}`)) continue;
+    acc.set(`host:${host}`, {
+      name: host,
+      category: "Other third-party",
+      isAI: false,
+      detectedVia: ["endpoint"],
+      evidence: [ev],
+      residencyKnown: false,
+    });
   }
 
   return [...acc.values()];
