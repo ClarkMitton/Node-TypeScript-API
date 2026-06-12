@@ -53,7 +53,9 @@ const PROVIDERS: ProviderDef[] = [
   { name: "Supabase", category: "Cloud data/storage", isAI: false, domains: /supabase\.co|supabase\.in/i, envVars: /\bSUPABASE_(URL|ANON_KEY|SERVICE_ROLE_KEY|KEY)\b|\bVITE_SUPABASE_/, packages: /^@supabase\//i },
   { name: "Firebase", category: "Cloud data/storage", isAI: false, domains: /firebaseio\.com|firebaseapp\.com|firestore\.googleapis\.com/i, envVars: /\bFIREBASE_/, packages: /^firebase$|^firebase-admin$/i },
   { name: "AWS", category: "Cloud data/storage", isAI: false, domains: /amazonaws\.com/i, envVars: /\bAWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY)\b/, packages: /^@aws-sdk\/|^aws-sdk$/i },
-  { name: "Google Cloud", category: "Cloud data/storage", isAI: false, domains: /storage\.googleapis\.com|googleapis\.com/i, packages: /^@google-cloud\//i },
+  // Narrow to data/storage subdomains — bare googleapis.com also covers Google
+  // Fonts/Maps, which are not data-storage services and would be false positives.
+  { name: "Google Cloud", category: "Cloud data/storage", isAI: false, domains: /storage\.googleapis\.com|firestore\.googleapis\.com|\w+\.run\.app|run\.googleapis\.com/i, packages: /^@google-cloud\//i },
   { name: "Azure", category: "Cloud data/storage", isAI: false, domains: /\.azure\.com|blob\.core\.windows\.net/i, envVars: /\bAZURE_/, packages: /^@azure\//i },
   { name: "MongoDB Atlas", category: "Cloud data/storage", isAI: false, domains: /mongodb\.net/i, envVars: /\bMONGODB_URI\b|\bMONGO_URL\b/ },
   { name: "Neon", category: "Cloud data/storage", isAI: false, domains: /neon\.tech/i, packages: /^@neondatabase\//i },

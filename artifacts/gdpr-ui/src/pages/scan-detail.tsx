@@ -116,6 +116,17 @@ type DPOSummary = {
   riskReason: string;
 };
 
+type ServiceEvidence = { file: string; line: number; snippet: string };
+type ThirdPartyService = {
+  name: string;
+  category: string;
+  isAI: boolean;
+  detectedVia: string[];
+  evidence: ServiceEvidence[];
+  regionHint?: string;
+  residencyKnown: boolean;
+};
+
 type AuditSummary = {
   repo: string;
   overallRisk: string;
@@ -130,6 +141,8 @@ type AuditSummary = {
   nonFindings: string[];
   dpoSummary?: DPOSummary;
   dpiaScreening?: DPIAScreening;
+  thirdPartyServices?: ThirdPartyService[];
+  residencyNotes?: string[];
 };
 
 type MitigationType =
@@ -354,6 +367,99 @@ function DPOSummaryPanel({ dpo }: { dpo: DPOSummary }) {
           <p className="text-xs text-[#8b949e] leading-relaxed">{dpo.riskReason}</p>
         </div>
       </div>
+    </div>
+  );
+}
+
+function ThirdPartyServicesPanel({
+  services,
+  residencyNotes = [],
+}: {
+  services: ThirdPartyService[];
+  residencyNotes?: string[];
+}) {
+  if (services.length === 0) return null;
+
+  function plainWhat(svc: ThirdPartyService): string {
+    const via = svc.detectedVia;
+    const how = via.includes("endpoint")
+      ? "a direct call to its service was found in the code"
+      : via.includes("env-var")
+      ? "an access key for it is set up in the code or environment"
+      : via.includes("dependency")
+      ? "its software library is installed"
+      : "it is referenced in the code";
+    const meaning = svc.isAI
+      ? "AI services usually process the data they receive on their own servers, typically outside the UK/EEA — you need to confirm what is sent and put an agreement in place."
+      : "Confirm whether any personal data is sent to it, and where that data is stored.";
+    return `${how}. ${meaning}`;
+  }
+
+  return (
+    <div className="bg-[#161b22] border border-[#21262d] rounded-lg overflow-hidden">
+      <div className="px-5 py-3 border-b border-[#21262d] flex items-center gap-2">
+        <ShieldAlert className="h-3.5 w-3.5 text-[#d29922]" />
+        <h3 className="text-xs text-[#8b949e] uppercase tracking-widest font-medium">
+          Third-party services your app connects to
+        </h3>
+        <span className="ml-auto text-[10px] text-[#484f58]">{services.length} detected</span>
+      </div>
+
+      <div className="px-5 py-4 border-b border-[#21262d]">
+        <p className="text-xs text-[#8b949e] leading-relaxed">
+          These are external services the code is wired to. Each one is a place your app may send
+          personal data to — and a likely transfer outside the UK/EEA. Confirm what is shared and
+          where it is stored (this feeds your DPIA and IT assessment).
+        </p>
+      </div>
+
+      <div className="divide-y divide-[#21262d]">
+        {services.map((svc, i) => (
+          <div key={i} className="px-5 py-3.5">
+            <div className="flex items-center gap-2 mb-1.5">
+              {svc.isAI ? (
+                <Bot className="h-3.5 w-3.5 text-[#bc8cff]" />
+              ) : (
+                <ArrowRight className="h-3.5 w-3.5 text-[#58a6ff]" />
+              )}
+              <span className="text-sm text-[#e6edf3] font-semibold">{svc.name}</span>
+              <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-[#21262d] text-[#8b949e]">
+                {svc.category}
+              </span>
+              {svc.isAI && (
+                <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-[#bc8cff20] text-[#bc8cff]">
+                  AI
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-[#c9d1d9] leading-relaxed">{plainWhat(svc)}</p>
+            <div className="mt-1.5 flex items-start gap-2 text-[11px] text-[#8b949e]">
+              <Info className="h-3 w-3 shrink-0 mt-0.5 text-[#d29922]" />
+              <span>
+                Data residency:{" "}
+                {svc.residencyKnown && svc.regionHint
+                  ? `a region "${svc.regionHint}" was found in the code — confirm it is in the UK/EEA.`
+                  : "cannot be determined from the code. Confirm with the supplier where personal data is stored (a non-UK/EEA location needs an international-transfer safeguard, GDPR Art. 44–49)."}
+              </span>
+            </div>
+            {svc.evidence[0] && (
+              <p className="mt-1 text-[10px] text-[#484f58]">
+                Evidence: {svc.evidence[0].file}
+                {svc.evidence[0].line ? `:${svc.evidence[0].line}` : ""}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {residencyNotes.length > 0 && (
+        <div className="px-5 py-3 bg-[#1c2128] border-t border-[#21262d]">
+          <p className="text-[11px] text-[#8b949e] leading-relaxed">
+            For your DPIA's “international transfers” section and the IT System Requirements
+            Assessment, you must record where each of these services stores and processes data.
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -1382,6 +1488,14 @@ export default function ScanDetail() {
           {/* DPO plain-English summary */}
           {auditSummary?.dpoSummary && (
             <DPOSummaryPanel dpo={auditSummary.dpoSummary} />
+          )}
+
+          {/* Third-party services + data residency */}
+          {auditSummary?.thirdPartyServices && auditSummary.thirdPartyServices.length > 0 && (
+            <ThirdPartyServicesPanel
+              services={auditSummary.thirdPartyServices}
+              residencyNotes={auditSummary.residencyNotes}
+            />
           )}
 
           {/* DPIA screening + questions */}
