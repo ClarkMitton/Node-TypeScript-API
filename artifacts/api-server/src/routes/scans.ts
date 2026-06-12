@@ -260,11 +260,11 @@ router.post("/scans", async (req, res): Promise<void> => {
       if (description && index.auditSummary?.dpiaScreening) {
         const aiQuestions = await generateScreeningQuestions(description, index);
         if (aiQuestions.length > 0) {
-          index.auditSummary.dpiaScreening.questions = [
-            ...index.auditSummary.dpiaScreening.questions,
-            ...aiQuestions,
-          ];
-          logger.info({ scanId: scan!.id, count: aiQuestions.length }, "Merged AI screening questions");
+          // Replace the generic screening questions with the tailored set (the
+          // rule-based questions remain the fallback when there's no description
+          // or the AI call fails). detectedTriggers / dpiaRecommended stay as-is.
+          index.auditSummary.dpiaScreening.questions = aiQuestions;
+          logger.info({ scanId: scan!.id, count: aiQuestions.length }, "Applied AI screening questions");
         }
       }
 
