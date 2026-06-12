@@ -17,8 +17,14 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
 });
 
-function extractText(buffer: Buffer, mimeType: string): string {
-  // For text-based files extract as UTF-8; for binary types return a placeholder
+async function extractText(
+  buffer: Buffer,
+  mimeType: string,
+  filename = "",
+): Promise<string> {
+  const lower = filename.toLowerCase();
+
+  // Plain text-ish formats
   if (
     mimeType.startsWith("text/") ||
     mimeType === "application/json" ||
@@ -26,10 +32,32 @@ function extractText(buffer: Buffer, mimeType: string): string {
   ) {
     return buffer.toString("utf-8");
   }
-  // PDF / DOCX: return raw buffer coerced to string (basic extraction)
-  // A production version would use pdf-parse / mammoth here
+
+  // DOCX → real text extraction via mammoth
+  if (mimeType.includes("wordprocessingml") || lower.endsWith(".docx")) {
+    try {
+      const mammoth = await import("mammoth");
+      const result = await mammoth.extractRawText({ buffer });
+      if (result.value.trim()) return result.value;
+    } catch {
+      /* fall through to best-effort */
+    }
+  }
+
+  // PDF → real text extraction via pdf-parse. Import the inner module to avoid
+  // pdf-parse's index.js debug block that reads a bundled test file at load.
+  if (mimeType === "application/pdf" || lower.endsWith(".pdf")) {
+    try {
+      const { default: pdfParse } = await import("pdf-parse/lib/pdf-parse.js");
+      const result = await pdfParse(buffer);
+      if (result.text.trim()) return result.text;
+    } catch {
+      /* fall through to best-effort */
+    }
+  }
+
+  // Best-effort fallback: strip non-printable bytes from a UTF-8 view.
   const text = buffer.toString("utf-8", 0, Math.min(buffer.length, 50000));
-  // Strip non-printable chars
   return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, " ").trim();
 }
 
@@ -61,7 +89,7 @@ router.post("/documents", upload.single("file"), async (req, res): Promise<void>
     req.file.originalname ??
     "Untitled";
 
-  const extractedText = extractText(req.file.buffer, req.file.mimetype);
+  const extractedText = await extractText(req.file.buffer, req.file.mimetype, req.file.originalname);
 
   const [doc] = await db
     .insert(documents)
