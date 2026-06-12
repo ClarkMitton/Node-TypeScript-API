@@ -1,0 +1,5 @@
+{
+  "buildCommand": "pnpm --filter \"@workspace/api-server...\" --if-present run build",
+  "installCommand": "pnpm install",
+  "outputDirectory": "dist"
+}

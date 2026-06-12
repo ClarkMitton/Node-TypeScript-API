@@ -17,10 +17,24 @@ import OpenAI from "openai";
 
 const router: IRouter = Router();
 
-const openai = new OpenAI({
-  apiKey: process.env["AI_INTEGRATIONS_OPENAI_API_KEY"],
-  baseURL: process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
-});
+// Construct the OpenAI client lazily so the server can boot without an OpenAI
+// key. Only the chat route needs it; the rest of the API (scans, etc.) does not.
+let _openai: OpenAI | null = null;
+function getOpenAI(): OpenAI {
+  if (!_openai) {
+    const apiKey = process.env["AI_INTEGRATIONS_OPENAI_API_KEY"];
+    if (!apiKey) {
+      throw new Error(
+        "AI_INTEGRATIONS_OPENAI_API_KEY is not set — the chat endpoint is unavailable.",
+      );
+    }
+    _openai = new OpenAI({
+      apiKey,
+      baseURL: process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"],
+    });
+  }
+  return _openai;
+}
 
 function buildSystemPrompt(
   scanContext: Record<string, unknown> | null,
@@ -306,7 +320,7 @@ router.post("/openai/conversations/:id/messages", async (req, res): Promise<void
   let assistantContent = "";
 
   try {
-    const stream = await openai.chat.completions.create({
+    const stream = await getOpenAI().chat.completions.create({
       model: "gpt-4.1",
       messages: chatMessages,
       stream: true,
