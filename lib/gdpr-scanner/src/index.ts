@@ -2,6 +2,7 @@ export * from "./types.js";
 export * from "./repo-ingestion.js";
 export * from "./static-scanner.js";
 export * from "./dependency-analyzer.js";
+export * from "./service-detector.js";
 export * from "./ast-analyzer.js";
 export * from "./gdpr-rule-engine.js";
 export * from "./review.js";
@@ -9,6 +10,7 @@ export * from "./review.js";
 import { cloneRepo, extractRepoName } from "./repo-ingestion.js";
 import { runStaticScanner } from "./static-scanner.js";
 import { analyzeDependencies } from "./dependency-analyzer.js";
+import { detectServices } from "./service-detector.js";
 import { runASTAnalyzer } from "./ast-analyzer.js";
 import { buildRepoIndex } from "./gdpr-rule-engine.js";
 import type { RepoIndex, ScanProgress, VerifiedFlow, Finding } from "./types.js";
@@ -48,8 +50,9 @@ export async function runFullScan(
   const staticFindings = await runStaticScanner(repoPath);
 
   onProgress?.({ stage: "deps", message: "Analyzing dependencies…" });
-  const [deps, astResult] = await Promise.all([
+  const [deps, services, astResult] = await Promise.all([
     analyzeDependencies(repoPath),
+    detectServices(repoPath),
     (async () => {
       onProgress?.({ stage: "ast", message: "Running AST flow analysis…" });
       return runASTAnalyzer(repoPath);
@@ -61,7 +64,7 @@ export async function runFullScan(
   const allFindings = deduplicateFindings([...staticFindings, ...astResult.findings]);
   const allVerifiedFlows = deduplicateFlows(astResult.verifiedFlows);
   const repoName = extractRepoName(githubUrl);
-  const index = buildRepoIndex(repoName, allFindings, deps, allVerifiedFlows);
+  const index = buildRepoIndex(repoName, allFindings, deps, allVerifiedFlows, services);
 
   onProgress?.({ stage: "done", message: "Scan complete." });
   return index;

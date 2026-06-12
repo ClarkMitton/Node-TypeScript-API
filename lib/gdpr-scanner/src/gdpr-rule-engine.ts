@@ -13,6 +13,7 @@ import type {
   DPOAction,
   ClarifyingQuestion,
   DPIAScreening,
+  ThirdPartyService,
 } from "./types.js";
 
 const DEP_CATEGORY_WEIGHTS: Record<string, number> = {
@@ -256,10 +257,17 @@ function buildDPOSummary(
   flows: VerifiedFlow[],
   potentialFindings: Finding[],
   deps: DependencyFinding[],
+  services: ThirdPartyService[],
   overallRisk: RiskLevel,
 ): DPOSummary {
   const hasFlows = flows.length > 0;
   const hasCapability = potentialFindings.length > 0;
+  // Services already represented by a confirmed AI flow are shown via the flow
+  // problem above; the rest are surfaced here as detected-but-unconfirmed.
+  const flowProviderNames = new Set(
+    flows.filter((f) => f.isAI).map((f) => (f.aiProvider ?? "AI provider").toLowerCase()),
+  );
+  const unconfirmedServices = services.filter((s) => !flowProviderNames.has(s.name.toLowerCase()));
 
   // Overview
   let overview: string;
@@ -342,14 +350,35 @@ function buildDPOSummary(
     });
   }
 
+  // Detected third-party services that aren't already covered by a confirmed
+  // flow above — surfaced so the report never claims "no third parties" when the
+  // code is clearly wired to one (e.g. an ElevenLabs call in an edge function).
+  for (const svc of unconfirmedServices) {
+    const how =
+      svc.detectedVia.includes("endpoint") ? "a direct call to its API was found in the code"
+      : svc.detectedVia.includes("env-var") ? "an API key for it is configured in the code/environment"
+      : svc.detectedVia.includes("dependency") ? "its software library is installed"
+      : "it is referenced in the code";
+    const aiNote = svc.isAI
+      ? " As an AI service this usually means data is sent outside the UK/EEA and may be processed by the provider — confirm what is sent."
+      : " Confirm whether any personal data is sent to it, and where it is stored.";
+    problems.push({
+      description: `Your app connects to ${svc.name} (${svc.category}) — ${how}.${aiNote} (${svc.evidence[0]?.file ?? "see code"})`,
+      badge: "CAPABILITY_ONLY",
+      colour: "AMBER",
+    });
+  }
+
   // ── What's working well ─────────────────────────────────────────────────────
+  const hasServices = services.length > 0;
   const workingWell: string[] = [];
   if (!hasFlows) workingWell.push("No confirmed collection or storage of personal data");
   if (identifiableCount === 0) workingWell.push("No names, email addresses, phone numbers or other identifiers confirmed as being stored");
-  if (transferCount === 0) workingWell.push("No data being sent to third-party services");
+  // Only claim "no third parties" when none were detected by any method.
+  if (transferCount === 0 && !hasServices) workingWell.push("No data being sent to third-party services");
   if (storageCount === 0) workingWell.push("No confirmed database writes of personal information");
   if (!hasAuth) workingWell.push("No user login or account system — so no user identity is being tracked");
-  if (!hasAnalytics) workingWell.push("No advertising or analytics tracking libraries found");
+  if (!hasAnalytics && !services.some((s) => s.category === "Analytics")) workingWell.push("No advertising or analytics tracking libraries found");
 
   // ── What you need to do ─────────────────────────────────────────────────────
   const actionItems: DPOAction[] = [];
@@ -431,7 +460,26 @@ function buildDPOSummary(
     });
   }
 
-  if (!hasFlows && !hasCapability) {
+  // Non-AI third-party / cloud services (AI providers are covered above).
+  const nonAiServices = services.filter((s) => !s.isAI);
+  if (nonAiServices.length > 0) {
+    const names = [...new Set(nonAiServices.map((s) => s.name))].join(", ");
+    actionItems.push({
+      action: `Your app integrates third-party / cloud services (${names}). For each one, confirm whether personal data is sent to it, put a Data Processing Agreement in place with the supplier, and check where it stores and processes data. A location outside the UK/EEA needs a documented international-transfer safeguard (GDPR Articles 44–49).`,
+      type: "POLICY",
+      priority: "MEDIUM",
+    });
+  }
+
+  if (services.length > 0) {
+    actionItems.push({
+      action: "Confirm the hosting region / data residency for each external service listed above. This is usually not visible in the code — ask the supplier (or check their dashboard) whether personal data stays in the UK/EEA. This feeds the DPIA (international transfers) and the IT System Requirements Assessment.",
+      type: "REVIEW",
+      priority: "MEDIUM",
+    });
+  }
+
+  if (!hasFlows && !hasCapability && services.length === 0) {
     actionItems.push({
       action: "No action required at this time. Re-run this scan when new features are added that handle user data.",
       type: "REVIEW",
@@ -463,17 +511,32 @@ function buildDPOSummary(
 
 // ─── DPIA screening (maps to the org's DPIA screening questions) ───────────────
 
-function buildDPIAScreening(flows: VerifiedFlow[], deps: DependencyFinding[]): DPIAScreening {
-  const hasAI = flows.some((f) => f.isAI) || deps.some((d) => d.category === "AI/LLM provider");
+function buildDPIAScreening(
+  flows: VerifiedFlow[],
+  deps: DependencyFinding[],
+  services: ThirdPartyService[] = [],
+): DPIAScreening {
+  const hasAI =
+    flows.some((f) => f.isAI) ||
+    deps.some((d) => d.category === "AI/LLM provider") ||
+    services.some((s) => s.isAI);
   const hasSpecialCategory = flows.some((f) => f.tags.includes("SPECIAL_CATEGORY_DATA"));
   const hasChildren = flows.some((f) => f.tags.includes("CHILDREN_DATA"));
-  const hasTransfer = flows.some((f) => f.tags.includes("USER_DATA_TRANSFER"));
+  // A third-party integration of any kind is a potential transfer / disclosure
+  // to a new recipient — a DPIA screening trigger in its own right.
+  const hasTransfer = flows.some((f) => f.tags.includes("USER_DATA_TRANSFER")) || services.length > 0;
+
+  const aiServiceNames = [...new Set(services.filter((s) => s.isAI).map((s) => s.name))];
+  const nonAiServiceNames = [...new Set(services.filter((s) => !s.isAI).map((s) => s.name))];
 
   const detectedTriggers: string[] = [];
-  if (hasAI) detectedTriggers.push("Uses AI / new technology");
+  if (hasAI) detectedTriggers.push(`Uses AI / new technology${aiServiceNames.length ? ` (${aiServiceNames.join(", ")})` : ""}`);
   if (hasSpecialCategory) detectedTriggers.push("May process special-category data (health, ethnicity, religion, biometrics)");
   if (hasChildren) detectedTriggers.push("May process children's or vulnerable people's data");
-  if (hasTransfer) detectedTriggers.push("Sends personal data to a third party (possible international transfer)");
+  if (hasTransfer) {
+    const provs = [...aiServiceNames, ...nonAiServiceNames];
+    detectedTriggers.push(`Sends data to third-party service(s)${provs.length ? ` (${provs.join(", ")})` : ""} — possible international transfer`);
+  }
 
   // Questions only a person can answer; each maps back to a DPIA screening trigger.
   const questions: ClarifyingQuestion[] = [
@@ -520,6 +583,54 @@ function buildDPIAScreening(flows: VerifiedFlow[], deps: DependencyFinding[]): D
   return { dpiaRecommended, detectedTriggers, questions };
 }
 
+// ─── Third-party services & data residency ────────────────────────────────────
+
+/**
+ * Fold AI/external-transfer flows confirmed by the AST analyzer into the
+ * detected-services list (so a traced ElevenLabs/OpenAI call is reflected even
+ * if the file-scan detector didn't see a literal domain/env-var), de-duplicated
+ * by provider name.
+ */
+function mergeFlowServices(
+  services: ThirdPartyService[],
+  flows: VerifiedFlow[],
+): ThirdPartyService[] {
+  const byName = new Map<string, ThirdPartyService>();
+  for (const s of services) byName.set(s.name.toLowerCase(), { ...s, detectedVia: [...s.detectedVia], evidence: [...s.evidence] });
+
+  for (const flow of flows) {
+    if (!flow.isAI) continue;
+    const name = flow.aiProvider ?? "AI provider";
+    const key = name.toLowerCase();
+    let svc = byName.get(key);
+    if (!svc) {
+      svc = { name, category: "AI/LLM", isAI: true, detectedVia: [], evidence: [], residencyKnown: false };
+      byName.set(key, svc);
+    }
+    if (!svc.detectedVia.includes("flow")) svc.detectedVia.push("flow");
+    if (svc.evidence.length < 3) {
+      svc.evidence.push({ file: flow.file, line: flow.line, snippet: flow.evidence.slice(0, 160) });
+    }
+  }
+
+  return [...byName.values()];
+}
+
+/**
+ * Plain-English data-residency / international-transfer prompts — one per
+ * detected external service. Region almost never lives in the repo, so the
+ * honest default is "confirm with the supplier". Maps to DPIA Step 4 and the
+ * IT System Requirements Assessment's data-residency requirement.
+ */
+function buildResidencyNotes(services: ThirdPartyService[]): string[] {
+  return services.map((s) => {
+    if (s.residencyKnown && s.regionHint) {
+      return `${s.name}: a hosting region (“${s.regionHint}”) was found in the code — confirm it is in the UK/EEA, otherwise you must document an international-transfer safeguard (GDPR Articles 44–49).`;
+    }
+    return `${s.name}: the hosting region / data residency cannot be determined from the code. Confirm with the supplier where personal data is stored and processed (UK/EEA or elsewhere); a non-UK/EEA location requires an international-transfer safeguard (GDPR Articles 44–49).`;
+  });
+}
+
 // ─── Audit summary generation ──────────────────────────────────────────────────
 
 function buildAuditSummary(
@@ -527,6 +638,7 @@ function buildAuditSummary(
   flows: VerifiedFlow[],
   potentialFindings: Finding[],
   deps: DependencyFinding[],
+  services: ThirdPartyService[],
   overallRisk: RiskLevel,
   confidence: number,
 ): AuditSummary {
@@ -538,7 +650,9 @@ function buildAuditSummary(
   const nonFindings: string[] = [];
   if (flows.length === 0) nonFindings.push("No verified personal data flows detected");
   if (storageCount === 0) nonFindings.push("No confirmed storage of personal data");
-  if (externalCount === 0) nonFindings.push("No confirmed external transfer of user data");
+  // Only assert "no external transfer" when NO third-party service was detected
+  // at all — otherwise the detected services (below) are the honest answer.
+  if (externalCount === 0 && services.length === 0) nonFindings.push("No confirmed external transfer of user data");
   if (loggingCount === 0) nonFindings.push("No confirmed logging of personal data");
   const hasAuthDep = deps.some((d) => d.category.startsWith("Auth"));
   if (!hasAuthDep) nonFindings.push("No authentication library detected — identity management may be absent");
@@ -561,8 +675,9 @@ function buildAuditSummary(
     conclusion = `${flows.length} verified personal data flow(s) detected: ${flowSummary}. Each flow has a confirmed user input source linked to a data sink.`;
   }
 
-  const dpoSummary = buildDPOSummary(flows, potentialFindings, deps, overallRisk);
-  const dpiaScreening = buildDPIAScreening(flows, deps);
+  const dpoSummary = buildDPOSummary(flows, potentialFindings, deps, services, overallRisk);
+  const dpiaScreening = buildDPIAScreening(flows, deps, services);
+  const residencyNotes = buildResidencyNotes(services);
 
   return {
     repo,
@@ -578,6 +693,8 @@ function buildAuditSummary(
     nonFindings,
     dpoSummary,
     dpiaScreening,
+    thirdPartyServices: services,
+    residencyNotes,
   };
 }
 
@@ -694,12 +811,23 @@ export function buildRepoIndex(
   findings: Finding[],
   deps: DependencyFinding[],
   verifiedFlows: VerifiedFlow[],
+  detectedServices: ThirdPartyService[] = [],
 ): RepoIndex {
   const potentialFindings = findings.filter((f) => !f.isVerifiedFlow);
-  const { score, level, breakdown, confidence } = computeGDPRScore(verifiedFlows, potentialFindings, deps);
+  const services = mergeFlowServices(detectedServices, verifiedFlows);
+  const { score, breakdown, confidence, level: computedLevel } = computeGDPRScore(verifiedFlows, potentialFindings, deps);
+  let level: RiskLevel = computedLevel;
+
+  // A detected AI service (even capability-only, with no traced data flow) must
+  // never be presented as "all clear" — escalate a quiet rating to NEEDS_REVIEW
+  // so the report asks what is actually sent before concluding.
+  const hasAIService = services.some((s) => s.isAI);
+  if (hasAIService && (level === "LOW" || level === "INSUFFICIENT_EVIDENCE")) {
+    level = "NEEDS_REVIEW";
+  }
 
   const auditCards = buildAuditCards(verifiedFlows);
-  const auditSummary = buildAuditSummary(repoName, verifiedFlows, potentialFindings, deps, level, confidence);
+  const auditSummary = buildAuditSummary(repoName, verifiedFlows, potentialFindings, deps, services, level, confidence);
 
   // Annotate findings that correspond to verified flows
   const annotatedFindings: Finding[] = findings.map((f) => {

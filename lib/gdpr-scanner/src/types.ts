@@ -39,6 +39,44 @@ export type AIProvider =
   | "OpenRouter"
   | "AI provider";
 
+// ─── Third-party service detection ─────────────────────────────────────────────
+//
+// Independent of verified data flows: any sign that the app integrates an
+// external service (provider domain, API-key env var, SDK dependency, or a
+// traced flow). This is what lets us surface e.g. an ElevenLabs call made from a
+// Supabase edge function even when no user-input source can be traced to it.
+export type ServiceCategory =
+  | "AI/LLM"
+  | "Cloud data/storage"
+  | "Analytics"
+  | "Email/Comms"
+  | "Payments"
+  | "Monitoring/Logging"
+  | "Other third-party";
+
+export type ServiceDetectionMethod = "endpoint" | "env-var" | "dependency" | "flow";
+
+export interface ServiceEvidence {
+  file: string;
+  line: number;
+  snippet: string;
+}
+
+export interface ThirdPartyService {
+  // Display name, e.g. "ElevenLabs" or "Supabase".
+  name: string;
+  category: ServiceCategory;
+  isAI: boolean;
+  // How we found it (one service may be detected several ways).
+  detectedVia: ServiceDetectionMethod[];
+  evidence: ServiceEvidence[];
+  // Best-effort hosting region read from the repo (e.g. "us-east-1"); usually
+  // absent because region is a provider-side setting, not in the code.
+  regionHint?: string;
+  // Whether the hosting region / data residency could be determined from code.
+  residencyKnown: boolean;
+}
+
 // A question we put to the staff member because the answer changes the rating
 // and cannot be determined reliably from code alone.
 export interface ClarifyingQuestion {
@@ -151,6 +189,11 @@ export interface AuditSummary {
   nonFindings: string[];
   dpoSummary: DPOSummary;
   dpiaScreening: DPIAScreening;
+  // External services the app integrates (detected independently of flows).
+  thirdPartyServices: ThirdPartyService[];
+  // Plain-English data-residency / international-transfer prompts, one per
+  // external service whose hosting region couldn't be confirmed from code.
+  residencyNotes: string[];
 }
 
 export interface DependencyFinding {
