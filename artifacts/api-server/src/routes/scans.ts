@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, desc, avg, count, and } from "drizzle-orm";
+import { eq, desc, avg, count, and, lt, ne } from "drizzle-orm";
 import { db } from "@workspace/db";
 import { scans, flowMitigations, reviewAnswers, recommendationStatus } from "@workspace/db/schema";
 import {
@@ -22,6 +22,8 @@ import os from "os";
 import { waitUntil } from "@vercel/functions";
 import { logger } from "../lib/logger.js";
 import { generateScreeningQuestions } from "../lib/ai-screening.js";
+import { buildScanDigest } from "../lib/scan-digest.js";
+import { generateDpiaDraft } from "../lib/dpia-draft.js";
 import { z } from "zod";
 
 const router: IRouter = Router();
@@ -30,6 +32,25 @@ const router: IRouter = Router();
 // (Vercel) the deployment filesystem is read-only except the temp dir (/tmp),
 // so process.cwd() ("/var/task") can't be written to.
 const REPOS_DIR = path.join(os.tmpdir(), "gdpr-scanner-repos");
+
+// ─── Stuck-scan cleanup ────────────────────────────────────────────────────────
+
+// A scan should finish well inside 5 minutes (the serverless function cap). If a
+// background worker died without updating the row, the scan would stay "running"
+// forever and the UI would poll indefinitely — mark anything older as failed.
+const STUCK_SCAN_MS = 10 * 60 * 1000;
+
+async function failStuckScans(): Promise<void> {
+  const cutoff = new Date(Date.now() - STUCK_SCAN_MS);
+  await db
+    .update(scans)
+    .set({
+      status: "failed",
+      error: "The scan did not finish in time and was stopped. Try scanning again.",
+      completedAt: new Date(),
+    })
+    .where(and(eq(scans.status, "running"), lt(scans.createdAt, cutoff)));
+}
 
 // ─── Mitigation score reduction factors ───────────────────────────────────────
 
@@ -146,6 +167,7 @@ function buildVibeChecks(
 // ─── Stats ─────────────────────────────────────────────────────────────────────
 
 router.get("/scans/stats", async (_req, res): Promise<void> => {
+  await failStuckScans();
   const rows = await db.select().from(scans).orderBy(desc(scans.createdAt)).limit(5);
 
   const aggRows = await db
@@ -189,6 +211,7 @@ router.get("/scans/stats", async (_req, res): Promise<void> => {
 // ─── List ──────────────────────────────────────────────────────────────────────
 
 router.get("/scans", async (_req, res): Promise<void> => {
+  await failStuckScans();
   const rows = await db.select().from(scans).orderBy(desc(scans.createdAt));
   res.json(
     ListScansResponse.parse(
@@ -314,6 +337,7 @@ router.get("/scans/:id", async (req, res): Promise<void> => {
     return;
   }
 
+  await failStuckScans();
   const [scan] = await db.select().from(scans).where(eq(scans.id, params.data.id));
   if (!scan) {
     res.status(404).json({ error: "Scan not found" });
@@ -395,6 +419,31 @@ router.get("/scans/:id", async (req, res): Promise<void> => {
       )
     : null;
 
+  // ── Previous scan of the same repo (for re-scan comparison) ───────────────
+  const [prev] = await db
+    .select()
+    .from(scans)
+    .where(
+      and(
+        eq(scans.githubUrl, scan.githubUrl),
+        eq(scans.status, "done"),
+        ne(scans.id, scan.id),
+        lt(scans.createdAt, scan.createdAt),
+      ),
+    )
+    .orderBy(desc(scans.createdAt))
+    .limit(1);
+
+  const previousScan = prev
+    ? {
+        id: prev.id,
+        gdprScore: prev.gdprScore,
+        riskLevel: prev.riskLevel,
+        verifiedFlowCount: ((prev.verifiedFlows as unknown[]) ?? []).length,
+        completedAt: prev.completedAt?.toISOString() ?? null,
+      }
+    : null;
+
   // ── Recommendation acknowledgements ("already in place") ──────────────────
   const recStatusRows = await db
     .select()
@@ -408,6 +457,7 @@ router.get("/scans/:id", async (req, res): Promise<void> => {
 
   res.json({
     ...base,
+    description: scan.description,
     verifiedFlows,
     auditCards,
     auditSummary,
@@ -418,6 +468,7 @@ router.get("/scans/:id", async (req, res): Promise<void> => {
     reviewAnswers: reviewAnswerList,
     reviewOutcome,
     recommendationStatuses,
+    previousScan,
   });
 });
 
@@ -543,6 +594,38 @@ router.delete("/scans/:id/mitigations/:mitigationId", async (req, res): Promise<
 
   if (!deleted) { res.status(404).json({ error: "Mitigation not found" }); return; }
   res.sendStatus(204);
+});
+
+// ─── DPIA draft (AI-generated, mirrors the org's DPIA template) ───────────────
+
+router.post("/scans/:id/dpia-draft", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const scanId = parseInt(raw!, 10);
+  if (isNaN(scanId)) { res.status(400).json({ error: "Invalid scan id" }); return; }
+
+  const [scan] = await db.select().from(scans).where(eq(scans.id, scanId));
+  if (!scan) { res.status(404).json({ error: "Scan not found" }); return; }
+  if (scan.status !== "done") { res.status(409).json({ error: "Scan has not completed" }); return; }
+
+  const [mitigationRows, answerRows, recRows] = await Promise.all([
+    db.select().from(flowMitigations).where(eq(flowMitigations.scanId, scanId)),
+    db.select().from(reviewAnswers).where(eq(reviewAnswers.scanId, scanId)),
+    db.select().from(recommendationStatus).where(eq(recommendationStatus.scanId, scanId)),
+  ]);
+
+  const digest = buildScanDigest(scan, {
+    mitigations: mitigationRows.map((m) => ({ flowKey: m.flowKey, type: m.type, description: m.description })),
+    answers: answerRows.map((a) => ({ flowKey: a.flowKey, questionId: a.questionId, answer: a.answer })),
+    recStatuses: recRows.map((r) => ({ recommendationKey: r.recommendationKey, status: r.status })),
+  });
+
+  const markdown = await generateDpiaDraft(digest);
+  if (!markdown) {
+    res.status(503).json({ error: "DPIA draft generation is unavailable right now. Please try again." });
+    return;
+  }
+
+  res.json({ markdown });
 });
 
 // ─── Delete scan ───────────────────────────────────────────────────────────────

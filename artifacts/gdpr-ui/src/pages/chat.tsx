@@ -7,9 +7,11 @@ import {
   useCreateOpenaiConversation,
   useDeleteOpenaiConversation,
   useListScans,
+  useListDocuments,
   getListOpenaiConversationsQueryKey,
   getGetOpenaiConversationQueryKey,
 } from "@workspace/api-client-react";
+import { ChatMarkdown } from "@/components/chat-markdown";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -31,6 +33,7 @@ export default function Chat() {
 
   const { data: conversations, isLoading: convsLoading } = useListOpenaiConversations();
   const { data: scans } = useListScans();
+  const { data: docs } = useListDocuments();
   const createConv = useCreateOpenaiConversation();
   const deleteConv = useDeleteOpenaiConversation();
 
@@ -41,6 +44,7 @@ export default function Chat() {
 
   const [input, setInput] = useState("");
   const [selectedScanId, setSelectedScanId] = useState<number | null>(null);
+  const [includeDocs, setIncludeDocs] = useState(true);
   const [messages, setMessages] = useState<StreamMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -122,7 +126,7 @@ export default function Chat() {
         body: JSON.stringify({
           content: userContent,
           scanId: selectedScanId ?? null,
-          documentIds: [],
+          documentIds: includeDocs ? (docs ?? []).map((d) => d.id) : [],
         }),
       });
 
@@ -151,6 +155,15 @@ export default function Chat() {
                 prev.map((m) =>
                   m.id === assistantMsg.id
                     ? { ...m, content: m.content + parsed.content! }
+                    : m,
+                ),
+              );
+            }
+            if (parsed.error) {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantMsg.id
+                    ? { ...m, content: m.content || "Sorry — the assistant couldn't reply just now. Please try again in a moment." }
                     : m,
                 ),
               );
@@ -290,6 +303,17 @@ export default function Chat() {
                       </option>
                     ))}
                 </select>
+                {docs && docs.length > 0 && (
+                  <label className="flex items-center gap-1.5 text-xs text-[#8b949e] ml-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={includeDocs}
+                      onChange={(e) => setIncludeDocs(e.target.checked)}
+                      className="accent-[#1f6feb]"
+                    />
+                    Include my {docs.length} uploaded document{docs.length > 1 ? "s" : ""}
+                  </label>
+                )}
               </div>
             )}
 
@@ -341,7 +365,11 @@ export default function Chat() {
                           : "bg-[#161b22] border border-[#21262d] text-[#c9d1d9]",
                       )}
                     >
-                      <p className="whitespace-pre-wrap">{msg.content}</p>
+                      {msg.role === "assistant" ? (
+                        <ChatMarkdown content={msg.content} />
+                      ) : (
+                        <p className="whitespace-pre-wrap">{msg.content}</p>
+                      )}
                       {msg.streaming && (
                         <span className="inline-block w-1 h-4 bg-[#58a6ff] animate-pulse ml-0.5 align-middle" />
                       )}

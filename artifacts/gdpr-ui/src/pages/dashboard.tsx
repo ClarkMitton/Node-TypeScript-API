@@ -16,11 +16,18 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "wouter";
-import { Github, Scan, TrendingUp, AlertTriangle, Shield, Loader2 } from "lucide-react";
+import { Github, Scan, TrendingUp, AlertTriangle, Shield, AlertCircle, Loader2 } from "lucide-react";
 import { API_BASE } from "@/lib/api-base";
+import { useToast } from "@/hooks/use-toast";
 
 const scanSchema = z.object({
-  githubUrl: z.string().url("Enter a valid GitHub URL"),
+  githubUrl: z
+    .string()
+    .url("Enter a valid GitHub URL")
+    .refine(
+      (u) => /^https?:\/\/(www\.)?github\.com\/[^/]+\/[^/]+/.test(u),
+      "That doesn't look like a GitHub repository link — it should be like https://github.com/owner/repo",
+    ),
   description: z.string().max(4000).optional(),
 });
 type ScanForm = z.infer<typeof scanSchema>;
@@ -55,6 +62,7 @@ export default function Dashboard() {
   const { data: stats, isLoading: statsLoading } = useGetScanStats();
   const { data: scans, isLoading: scansLoading } = useListScans();
   const [creating, setCreating] = useState(false);
+  const { toast } = useToast();
 
   const form = useForm<ScanForm>({
     resolver: zodResolver(scanSchema),
@@ -74,12 +82,26 @@ export default function Dashboard() {
           description: values.description?.trim() || undefined,
         }),
       });
-      if (!res.ok) return;
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { error?: string } | null;
+        toast({
+          variant: "destructive",
+          title: "Couldn't start the scan",
+          description: body?.error ?? `The server replied with an error (${res.status}). Please try again.`,
+        });
+        return;
+      }
       const scan = (await res.json()) as { id: number };
       qc.invalidateQueries({ queryKey: getListScansQueryKey() });
       qc.invalidateQueries({ queryKey: getGetScanStatsQueryKey() });
       form.reset();
       setLocation(`/scans/${scan.id}`);
+    } catch {
+      toast({
+        variant: "destructive",
+        title: "Couldn't reach the server",
+        description: "Check your connection and try again.",
+      });
     } finally {
       setCreating(false);
     }
@@ -164,7 +186,7 @@ export default function Dashboard() {
           ))}
         </div>
       ) : stats ? (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
           <StatCard
             label="Total Scans"
             value={stats.totalScans}
@@ -182,6 +204,12 @@ export default function Dashboard() {
             value={stats.highRiskCount}
             icon={AlertTriangle}
             color="text-[#f97583]"
+          />
+          <StatCard
+            label="Medium Risk"
+            value={stats.mediumRiskCount}
+            icon={AlertCircle}
+            color="text-[#e3b341]"
           />
           <StatCard
             label="Low Risk"

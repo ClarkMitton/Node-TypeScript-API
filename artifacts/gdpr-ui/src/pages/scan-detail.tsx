@@ -7,8 +7,9 @@ import { RiskBadge } from "@/components/risk-badge";
 import { ScoreGauge } from "@/components/score-gauge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Loader2, Trash2, Github, AlertCircle, CheckCircle2, ShieldAlert, ArrowRight, Info, FileText, Bot, Send, User, ClipboardList, AlertTriangle, Plus, X, ChevronDown, ChevronUp, Shield, FileDown, Eye } from "lucide-react";
+import { ArrowLeft, Loader2, Trash2, Github, AlertCircle, CheckCircle2, ShieldAlert, ArrowRight, Info, FileText, Bot, Send, User, ClipboardList, AlertTriangle, Plus, X, ChevronDown, ChevronUp, Shield, FileDown, Eye, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
 import { GDPRReportModal } from "@/components/gdpr-report";
+import { DPIADraftModal } from "@/components/dpia-draft-modal";
 import { ChatMarkdown } from "@/components/chat-markdown";
 import { Link } from "wouter";
 
@@ -1476,9 +1477,43 @@ export default function ScanDetail() {
     reviewAnswers?: ReviewAnswer[];
     reviewOutcome?: ReviewOutcome | null;
     recommendationStatuses?: { recommendationKey: string; status: string }[];
+    description?: string | null;
+    previousScan?: {
+      id: number;
+      gdprScore: number | null;
+      riskLevel: string | null;
+      verifiedFlowCount: number;
+      completedAt: string | null;
+    } | null;
   }) | undefined;
 
   const deleteScan = useDeleteScan();
+  const [showDpiaDraft, setShowDpiaDraft] = useState(false);
+  const [rescanning, setRescanning] = useState(false);
+
+  // Re-scan: create a fresh scan of the same repo (same description) and jump
+  // to it — the new scan's page shows the comparison with this one.
+  async function handleRescan() {
+    if (!scan || rescanning) return;
+    setRescanning(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/scans`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          githubUrl: scan.githubUrl,
+          description: scan.description || undefined,
+        }),
+      });
+      if (!res.ok) return;
+      const created = (await res.json()) as { id: number };
+      qc.invalidateQueries({ queryKey: getListScansQueryKey() });
+      qc.invalidateQueries({ queryKey: getGetScanStatsQueryKey() });
+      setLocation(`/scans/${created.id}`);
+    } finally {
+      setRescanning(false);
+    }
+  }
 
   // Poll while pending/running
   useEffect(() => {
@@ -1569,15 +1604,38 @@ export default function ScanDetail() {
         </div>
         <div className="flex items-center gap-2">
           {scan.status === "done" && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowReport(true)}
-              className="text-[#8b949e] hover:text-[#e6edf3] hover:bg-[#21262d] gap-1.5"
-            >
-              <FileDown className="h-3.5 w-3.5" />
-              <span className="text-xs hidden sm:inline">Download Report</span>
-            </Button>
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void handleRescan()}
+                disabled={rescanning}
+                className="text-[#8b949e] hover:text-[#e6edf3] hover:bg-[#21262d] gap-1.5"
+                title="Run a fresh scan of this repository and compare with this one"
+              >
+                {rescanning ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                <span className="text-xs hidden sm:inline">Re-scan</span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowDpiaDraft(true)}
+                className="text-[#bc8cff] hover:text-[#d2a8ff] hover:bg-[#bc8cff]/10 gap-1.5"
+                title="Generate a pre-filled DPIA draft from this scan"
+              >
+                <ClipboardList className="h-3.5 w-3.5" />
+                <span className="text-xs hidden sm:inline">Draft DPIA</span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowReport(true)}
+                className="text-[#8b949e] hover:text-[#e6edf3] hover:bg-[#21262d] gap-1.5"
+              >
+                <FileDown className="h-3.5 w-3.5" />
+                <span className="text-xs hidden sm:inline">Download Report</span>
+              </Button>
+            </>
           )}
           <Button
             variant="ghost"
@@ -1620,6 +1678,47 @@ export default function ScanDetail() {
       {/* Results */}
       {scan.status === "done" && (
         <>
+          {/* Comparison with the previous scan of this repo */}
+          {scan.previousScan && (() => {
+            const prev = scan.previousScan;
+            const cur = scan.gdprScore ?? 0;
+            const prevScore = prev.gdprScore ?? 0;
+            const delta = cur - prevScore;
+            const flowDelta = verifiedFlows.length - prev.verifiedFlowCount;
+            const improved = delta < 0 || (delta === 0 && flowDelta < 0);
+            const same = delta === 0 && flowDelta === 0;
+            const color = same ? "#8b949e" : improved ? "#3fb950" : "#f97583";
+            return (
+              <div
+                className="rounded-lg px-5 py-3 border flex items-center gap-3"
+                style={{ borderColor: `${color}45`, background: `${color}12` }}
+              >
+                {same ? (
+                  <Info className="h-4 w-4 shrink-0" style={{ color }} />
+                ) : improved ? (
+                  <TrendingDown className="h-4 w-4 shrink-0" style={{ color }} />
+                ) : (
+                  <TrendingUp className="h-4 w-4 shrink-0" style={{ color }} />
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium" style={{ color }}>
+                    {same
+                      ? "No change since the previous scan."
+                      : improved
+                      ? `Improved since the previous scan — score ${prevScore} → ${cur}`
+                      : `Risk has increased since the previous scan — score ${prevScore} → ${cur}`}
+                  </p>
+                  <p className="text-xs text-[#8b949e] mt-0.5">
+                    Confirmed data movements: {prev.verifiedFlowCount} → {verifiedFlows.length}
+                    {prev.completedAt && ` · previous scan ${new Date(prev.completedAt).toLocaleDateString()}`}
+                    {" · "}
+                    <Link href={`/scans/${prev.id}`} className="text-[#58a6ff] hover:underline">view previous scan</Link>
+                  </p>
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Score + metadata */}
           <div className="bg-[#161b22] border border-[#21262d] rounded-lg p-5 flex flex-col sm:flex-row items-center gap-6">
             {/* Gauge — shows mitigated score when reduced */}
@@ -1855,6 +1954,15 @@ export default function ScanDetail() {
             verifiedFlowCount={verifiedFlows.length}
           />
         </>
+      )}
+
+      {/* DPIA draft modal */}
+      {showDpiaDraft && (
+        <DPIADraftModal
+          scanId={id}
+          repoName={scan.repoName ?? "this repo"}
+          onClose={() => setShowDpiaDraft(false)}
+        />
       )}
 
       {/* PDF / print report modal */}
