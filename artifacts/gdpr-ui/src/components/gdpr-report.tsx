@@ -71,9 +71,21 @@ interface DPIAScreening {
   questions: ClarifyingQuestion[];
 }
 
+interface ThirdPartyService {
+  name: string;
+  category: string;
+  isAI: boolean;
+  detectedVia: string[];
+  evidence: { file: string; line: number; snippet: string }[];
+  regionHint?: string;
+  residencyKnown: boolean;
+}
+
 interface AuditSummary {
   dpoSummary?: DPOSummary;
   dpiaScreening?: DPIAScreening;
+  thirdPartyServices?: ThirdPartyService[];
+  residencyNotes?: string[];
 }
 
 interface ScanInfo {
@@ -363,6 +375,9 @@ export function GDPRReportModal({
   }, []);
 
   const potentialSignals = findings.filter((f) => !f.isVerifiedFlow);
+  const services = auditSummary?.thirdPartyServices ?? [];
+  const residencyNotes = auditSummary?.residencyNotes ?? [];
+  const hasServices = services.length > 0 || deps.length > 0;
   const scoreReduced = mitigatedScore < (scan.gdprScore ?? 0);
   const scanDate = scan.completedAt
     ? new Date(scan.completedAt).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })
@@ -463,10 +478,10 @@ export function GDPRReportModal({
             <strong>{potentialSignals.length} potential signal{potentialSignals.length !== 1 ? "s" : ""}</strong>
             {" — "}libraries or patterns that are present in the code, but we could not confirm personal data flowing through them. These are not scored risks.
           </li>
-          {deps.length > 0 && (
+          {hasServices && (
             <li>
-              <strong>{deps.length} third-party service{deps.length !== 1 ? "s" : ""} detected</strong>
-              {" — "}libraries that handle data and may require a Data Processing Agreement.
+              <strong>{services.length || deps.length} external service{(services.length || deps.length) !== 1 ? "s" : ""} detected</strong>
+              {" — "}places your app connects to that may receive personal data (some need a Data Processing Agreement).
             </li>
           )}
         </ul>
@@ -606,29 +621,58 @@ export function GDPRReportModal({
         )}
 
         {/* ── Section 4: Third-party services ── */}
-        {deps.length > 0 && (
+        {hasServices && (
           <>
             <hr style={S.sectionRule} />
-            <h2 style={S.h2}>4. Third-party services detected</h2>
+            <h2 style={S.h2}>4. Third-party services your app connects to</h2>
             <p style={S.para}>
-              These libraries handle data on your behalf. Some may require a Data Processing Agreement (DPA) — a legal contract specifying how they will use the data you send them.
+              These are external services the code is wired to. Each is a place your app may send personal
+              data to — and a likely transfer outside the UK/EEA. Confirm what is shared and where it is
+              stored; some require a Data Processing Agreement (DPA).
             </p>
-            {deps.map((d, i) => (
-              <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "10px 0", borderBottom: "1px solid #f1f3f5" }}>
-                <span style={{ ...S.label, flexShrink: 0, marginTop: 1 }}>{depPlainCategory(d.category)}</span>
-                <div style={{ flex: 1 }}>
-                  <p style={{ margin: 0, fontWeight: 600, fontSize: 13 }}>{d.name}</p>
-                  {DPA_CATEGORIES.has(d.category) && (
-                    <p style={{ margin: "2px 0 0 0", fontSize: 12, color: "#b45309" }}>
-                      ⚠ A Data Processing Agreement may be required with this provider.
+
+            {services.length > 0
+              ? services.map((s, i) => (
+                  <div key={i} style={{ padding: "10px 0", borderBottom: "1px solid #f1f3f5" }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <span style={{ fontWeight: 700, fontSize: 13 }}>{s.name}</span>
+                      <span style={S.label}>{s.category}</span>
+                      {s.isAI && <span style={{ ...S.label, background: "#ede9fe", color: "#6d28d9" }}>AI</span>}
+                    </div>
+                    <p style={{ margin: "3px 0 0 0", fontSize: 12, color: "#374151" }}>
+                      Data residency:{" "}
+                      {s.residencyKnown && s.regionHint
+                        ? `a region "${s.regionHint}" was found in the code — confirm it is in the UK/EEA.`
+                        : "cannot be determined from the code — confirm with the supplier (a non-UK/EEA location needs an international-transfer safeguard, GDPR Art. 44–49)."}
                     </p>
-                  )}
-                </div>
+                    {s.evidence[0] && (
+                      <p style={{ margin: "2px 0 0 0", fontSize: 11, color: "#9ca3af" }}>
+                        Evidence: {s.evidence[0].file}
+                        {s.evidence[0].line ? `:${s.evidence[0].line}` : ""}
+                      </p>
+                    )}
+                  </div>
+                ))
+              : deps.map((d, i) => (
+                  <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "10px 0", borderBottom: "1px solid #f1f3f5" }}>
+                    <span style={{ ...S.label, flexShrink: 0, marginTop: 1 }}>{depPlainCategory(d.category)}</span>
+                    <div style={{ flex: 1 }}>
+                      <p style={{ margin: 0, fontWeight: 600, fontSize: 13 }}>{d.name}</p>
+                      {DPA_CATEGORIES.has(d.category) && (
+                        <p style={{ margin: "2px 0 0 0", fontSize: 12, color: "#b45309" }}>
+                          ⚠ A Data Processing Agreement may be required with this provider.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+
+            {residencyNotes.length > 0 && (
+              <div style={{ ...S.infoBox, marginTop: 16 }}>
+                For your DPIA's “international transfers” section and the IT System Requirements Assessment,
+                record where each of these services stores and processes personal data.
               </div>
-            ))}
-            <div style={{ ...S.infoBox, marginTop: 16 }}>
-              Note: Direct API integrations via environment variables may not appear here. Check your .env configuration for any service not listed above.
-            </div>
+            )}
           </>
         )}
 
@@ -651,7 +695,7 @@ export function GDPRReportModal({
 
         {/* ── Section 6: Risk summary ── */}
         <hr style={S.sectionRule} />
-        <h2 style={S.h2}>{vibeChecks.length > 0 ? "6" : deps.length > 0 ? "5" : "4"}. Risk summary</h2>
+        <h2 style={S.h2}>{vibeChecks.length > 0 ? "6" : hasServices ? "5" : "4"}. Risk summary</h2>
 
         <div style={{ borderLeft: `4px solid ${riskColor(scoreReduced ? mitigatedRiskLevel : scan.riskLevel)}`, paddingLeft: 16, marginBottom: 20 }}>
           <p style={{ ...S.para, margin: 0 }}>
