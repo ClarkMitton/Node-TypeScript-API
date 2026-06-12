@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { eq, desc, avg, count, and } from "drizzle-orm";
 import { db } from "@workspace/db";
-import { scans, flowMitigations, reviewAnswers } from "@workspace/db/schema";
+import { scans, flowMitigations, reviewAnswers, recommendationStatus } from "@workspace/db/schema";
 import {
   CreateScanBody,
   GetScanParams,
@@ -376,6 +376,17 @@ router.get("/scans/:id", async (req, res): Promise<void> => {
       )
     : null;
 
+  // ── Recommendation acknowledgements ("already in place") ──────────────────
+  const recStatusRows = await db
+    .select()
+    .from(recommendationStatus)
+    .where(eq(recommendationStatus.scanId, params.data.id));
+
+  const recommendationStatuses = recStatusRows.map((r) => ({
+    recommendationKey: r.recommendationKey,
+    status: r.status,
+  }));
+
   res.json({
     ...base,
     verifiedFlows,
@@ -387,6 +398,7 @@ router.get("/scans/:id", async (req, res): Promise<void> => {
     vibeChecks,
     reviewAnswers: reviewAnswerList,
     reviewOutcome,
+    recommendationStatuses,
   });
 });
 
@@ -458,6 +470,42 @@ router.post("/scans/:id/review-answers", async (req, res): Promise<void> => {
     flowKey: row!.flowKey,
     questionId: row!.questionId,
     answer: row!.answer,
+    createdAt: row!.createdAt.toISOString(),
+  });
+});
+
+// ─── Mark a recommendation as already in place (or back to todo) ──────────────
+
+const SetRecommendationStatusBody = z.object({
+  recommendationKey: z.string().min(1).max(200),
+  status: z.enum(["already_in_place", "todo"]),
+});
+
+router.post("/scans/:id/recommendation-status", async (req, res): Promise<void> => {
+  const raw = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+  const scanId = parseInt(raw!, 10);
+  if (isNaN(scanId)) { res.status(400).json({ error: "Invalid scan id" }); return; }
+
+  const parsed = SetRecommendationStatusBody.safeParse(req.body);
+  if (!parsed.success) { res.status(400).json({ error: parsed.error.message }); return; }
+
+  const [scan] = await db.select({ id: scans.id }).from(scans).where(eq(scans.id, scanId));
+  if (!scan) { res.status(404).json({ error: "Scan not found" }); return; }
+
+  const [row] = await db
+    .insert(recommendationStatus)
+    .values({ scanId, recommendationKey: parsed.data.recommendationKey, status: parsed.data.status })
+    .onConflictDoUpdate({
+      target: [recommendationStatus.scanId, recommendationStatus.recommendationKey],
+      set: { status: parsed.data.status, createdAt: new Date() },
+    })
+    .returning();
+
+  res.status(201).json({
+    id: row!.id,
+    scanId: row!.scanId,
+    recommendationKey: row!.recommendationKey,
+    status: row!.status,
     createdAt: row!.createdAt.toISOString(),
   });
 });

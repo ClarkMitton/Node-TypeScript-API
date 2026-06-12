@@ -83,6 +83,19 @@ EXCEPTION WHEN duplicate_object THEN null; END $$;
 DO $$ BEGIN
   ALTER TABLE "review_answers" ADD CONSTRAINT "review_answers_scan_id_scans_id_fk" FOREIGN KEY ("scan_id") REFERENCES "public"."scans"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION WHEN duplicate_object THEN null; END $$;
+
+CREATE TABLE IF NOT EXISTS "recommendation_status" (
+  "id" serial PRIMARY KEY NOT NULL,
+  "scan_id" integer NOT NULL,
+  "recommendation_key" text NOT NULL,
+  "status" text NOT NULL,
+  "created_at" timestamp with time zone DEFAULT now() NOT NULL,
+  CONSTRAINT "recommendation_status_scan_key_uq" UNIQUE("scan_id","recommendation_key")
+);
+
+DO $$ BEGIN
+  ALTER TABLE "recommendation_status" ADD CONSTRAINT "recommendation_status_scan_id_scans_id_fk" FOREIGN KEY ("scan_id") REFERENCES "public"."scans"("id") ON DELETE cascade ON UPDATE no action;
+EXCEPTION WHEN duplicate_object THEN null; END $$;
 `;
 
 let schemaPromise: Promise<void> | null = null;

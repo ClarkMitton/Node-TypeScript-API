@@ -263,9 +263,42 @@ const PRIORITY_DOT: Record<string, string> = {
   LOW:    "bg-[#3fb950]",
 };
 
-function DPOSummaryPanel({ dpo }: { dpo: DPOSummary }) {
+// Stable short key for a recommendation, derived from its text (djb2 → base36),
+// so we can persist "already in place" without the scanner minting IDs.
+function recommendationKey(text: string): string {
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+  return "rec_" + (h >>> 0).toString(36);
+}
+
+function DPOSummaryPanel({
+  dpo,
+  scanId,
+  statuses = [],
+  onRefresh,
+}: {
+  dpo: DPOSummary;
+  scanId?: number;
+  statuses?: { recommendationKey: string; status: string }[];
+  onRefresh?: () => void;
+}) {
   const riskStyle = DPO_RISK_STYLES[dpo.riskLevel] ?? DPO_RISK_STYLES["LOW"]!;
   const hasProblems = dpo.problems.some((p) => p.colour !== "GREEN");
+  const statusByKey = new Map(statuses.map((s) => [s.recommendationKey, s.status]));
+
+  async function setStatus(key: string, status: "already_in_place" | "todo") {
+    if (scanId == null) return;
+    try {
+      await fetch(`${API_BASE}/api/scans/${scanId}/recommendation-status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ recommendationKey: key, status }),
+      });
+      onRefresh?.();
+    } catch {
+      /* ignore — UI will be refreshed on next poll */
+    }
+  }
 
   return (
     <div className="bg-[#161b22] border border-[#21262d] rounded-lg overflow-hidden">
@@ -342,19 +375,46 @@ function DPOSummaryPanel({ dpo }: { dpo: DPOSummary }) {
           <div className="space-y-2.5">
             {dpo.actionItems.map((item, i) => {
               const style = ACTION_STYLES[item.type];
+              const key = recommendationKey(item.action);
+              const done = statusByKey.get(key) === "already_in_place";
               return (
-                <div key={i} className={`rounded border px-3.5 py-3 ${style.bg} ${style.border}`}>
+                <div
+                  key={i}
+                  className={`rounded border px-3.5 py-3 ${done ? "bg-[#0d1117] border-[#21262d] opacity-60" : `${style.bg} ${style.border}`}`}
+                >
                   <div className="flex items-center gap-2 mb-1.5">
                     <span className={`text-[9px] font-bold tracking-widest px-1.5 py-0.5 rounded border ${style.border} ${style.text}`}>
                       {style.label}
                     </span>
                     <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${PRIORITY_DOT[item.priority]}`} title={`${item.priority} priority`} />
+                    {done && (
+                      <span className="text-[9px] font-bold tracking-wider px-1.5 py-0.5 rounded bg-[#3fb95020] text-[#3fb950] flex items-center gap-1">
+                        <CheckCircle2 className="h-2.5 w-2.5" /> ALREADY IN PLACE
+                      </span>
+                    )}
+                    {scanId != null && (
+                      <button
+                        onClick={() => setStatus(key, done ? "todo" : "already_in_place")}
+                        className="ml-auto text-[10px] text-[#58a6ff] hover:underline shrink-0"
+                      >
+                        {done ? "Undo" : "Mark as already in place"}
+                      </button>
+                    )}
                   </div>
-                  <p className="text-xs text-[#c9d1d9] leading-relaxed">{item.action}</p>
+                  <p className={`text-xs leading-relaxed ${done ? "text-[#8b949e] line-through decoration-[#484f58]" : "text-[#c9d1d9]"}`}>{item.action}</p>
                 </div>
               );
             })}
           </div>
+          {(() => {
+            const outstanding = dpo.actionItems.filter((it) => statusByKey.get(recommendationKey(it.action)) !== "already_in_place").length;
+            return (
+              <p className="mt-3 text-[11px] text-[#8b949e]">
+                {outstanding} of {dpo.actionItems.length} action{dpo.actionItems.length === 1 ? "" : "s"} still outstanding
+                {outstanding < dpo.actionItems.length ? " — the rest are marked as already in place." : "."}
+              </p>
+            );
+          })()}
         </div>
       )}
 
@@ -1246,6 +1306,7 @@ export default function ScanDetail() {
     vibeChecks?: VibeCheck[];
     reviewAnswers?: ReviewAnswer[];
     reviewOutcome?: ReviewOutcome | null;
+    recommendationStatuses?: { recommendationKey: string; status: string }[];
   }) | undefined;
 
   const deleteScan = useDeleteScan();
@@ -1298,6 +1359,7 @@ export default function ScanDetail() {
   const mitigations = scan.mitigations ?? [];
   const reviewAnswers = scan.reviewAnswers ?? [];
   const reviewOutcome = scan.reviewOutcome ?? null;
+  const recommendationStatuses = scan.recommendationStatuses ?? [];
   const resolvedByFlow = new Map<string, string>(
     (reviewOutcome?.cardResolutions ?? []).map((r) => [r.flowKey, r.resolvedRiskLevel]),
   );
@@ -1487,7 +1549,12 @@ export default function ScanDetail() {
 
           {/* DPO plain-English summary */}
           {auditSummary?.dpoSummary && (
-            <DPOSummaryPanel dpo={auditSummary.dpoSummary} />
+            <DPOSummaryPanel
+              dpo={auditSummary.dpoSummary}
+              scanId={id}
+              statuses={recommendationStatuses}
+              onRefresh={() => void refetch()}
+            />
           )}
 
           {/* Third-party services + data residency */}
