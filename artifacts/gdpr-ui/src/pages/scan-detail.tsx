@@ -431,6 +431,44 @@ function DPOSummaryPanel({
   );
 }
 
+// Card with a collapsible body. Used for the longer reference sections so the
+// page isn't overwhelming; default closed. (The PDF export is a separate, always-
+// expanded layout, so collapsing here doesn't affect downloads.)
+function CollapsibleSection({
+  title,
+  right,
+  icon,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  right?: string;
+  icon?: React.ReactNode;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="bg-[#161b22] border border-[#21262d] rounded-lg overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={`w-full px-4 py-3 flex items-center gap-2 text-left hover:bg-[#1c2128] transition-colors ${open ? "border-b border-[#21262d]" : ""}`}
+      >
+        {icon}
+        <h3 className="text-xs text-[#8b949e] uppercase tracking-widest font-medium">{title}</h3>
+        {right && <span className="text-[10px] text-[#484f58]">{right}</span>}
+        {open ? (
+          <ChevronUp className="h-3.5 w-3.5 text-[#484f58] ml-auto shrink-0" />
+        ) : (
+          <ChevronDown className="h-3.5 w-3.5 text-[#484f58] ml-auto shrink-0" />
+        )}
+      </button>
+      {open && children}
+    </div>
+  );
+}
+
 function ThirdPartyServicesPanel({
   services,
   residencyNotes = [],
@@ -456,15 +494,11 @@ function ThirdPartyServicesPanel({
   }
 
   return (
-    <div className="bg-[#161b22] border border-[#21262d] rounded-lg overflow-hidden">
-      <div className="px-5 py-3 border-b border-[#21262d] flex items-center gap-2">
-        <ShieldAlert className="h-3.5 w-3.5 text-[#d29922]" />
-        <h3 className="text-xs text-[#8b949e] uppercase tracking-widest font-medium">
-          Third-party services your app connects to
-        </h3>
-        <span className="ml-auto text-[10px] text-[#484f58]">{services.length} detected</span>
-      </div>
-
+    <CollapsibleSection
+      title="Third-party services your app connects to"
+      right={`${services.length} detected`}
+      icon={<ShieldAlert className="h-3.5 w-3.5 text-[#d29922]" />}
+    >
       <div className="px-5 py-4 border-b border-[#21262d]">
         <p className="text-xs text-[#8b949e] leading-relaxed">
           These are external services the code is wired to. Each one is a place your app may send
@@ -520,7 +554,7 @@ function ThirdPartyServicesPanel({
           </p>
         </div>
       )}
-    </div>
+    </CollapsibleSection>
   );
 }
 
@@ -1210,13 +1244,10 @@ function PotentialPatterns({ findings }: { findings: Finding[] }) {
   if (potential.length === 0) return null;
 
   return (
-    <div className="bg-[#161b22] border border-[#21262d] rounded-lg overflow-hidden">
-      <div className="px-4 py-3 border-b border-[#21262d] flex items-center gap-2">
-        <Info className="h-3.5 w-3.5 text-[#484f58]" />
-        <h3 className="text-xs text-[#8b949e] uppercase tracking-widest font-medium">
-          Potential signals ({potential.length}) — not confirmed risks
-        </h3>
-      </div>
+    <CollapsibleSection
+      title={`Potential signals (${potential.length}) — not confirmed risks`}
+      icon={<Info className="h-3.5 w-3.5 text-[#484f58]" />}
+    >
       <div className="px-4 py-2.5 bg-[#0d1117] border-b border-[#21262d]">
         <p className="text-xs text-[#484f58]">
           These libraries or patterns are present in the code, but we could not trace personal data flowing through them. They are not scored risks.
@@ -1248,7 +1279,7 @@ function PotentialPatterns({ findings }: { findings: Finding[] }) {
           </div>
         ))}
       </div>
-    </div>
+    </CollapsibleSection>
   );
 }
 
@@ -1581,27 +1612,24 @@ export default function ScanDetail() {
 
           {/* Confirmed data movement audit cards */}
           {auditCards.length > 0 && (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between px-1">
-                <h3 className="text-xs text-[#8b949e] uppercase tracking-widest font-medium">
-                  Confirmed data movements ({auditCards.length})
-                </h3>
+            <CollapsibleSection title={`Confirmed data movements (${auditCards.length})`} right="tap to expand">
+              <div className="p-4 space-y-4">
                 <p className="text-[10px] text-[#484f58]">
                   Click "How will you reduce this risk?" on each to add controls
                 </p>
+                {auditCards.map((card, i) => (
+                  <AuditCardPanel
+                    key={i}
+                    card={card}
+                    scanId={id}
+                    mitigations={getMitigationsForCard(card)}
+                    reviewAnswers={reviewAnswers}
+                    resolvedRiskLevel={resolvedByFlow.get(`${card.evidence.file}:${card.evidence.line}`)}
+                    onRefresh={() => void refetch()}
+                  />
+                ))}
               </div>
-              {auditCards.map((card, i) => (
-                <AuditCardPanel
-                  key={i}
-                  card={card}
-                  scanId={id}
-                  mitigations={getMitigationsForCard(card)}
-                  reviewAnswers={reviewAnswers}
-                  resolvedRiskLevel={resolvedByFlow.get(`${card.evidence.file}:${card.evidence.line}`)}
-                  onRefresh={() => void refetch()}
-                />
-              ))}
-            </div>
+            </CollapsibleSection>
           )}
 
           {/* Verified flow quick list (if no audit cards but flows exist — shouldn't happen) */}
@@ -1636,12 +1664,7 @@ export default function ScanDetail() {
 
           {/* GDPR-relevant dependencies */}
           {deps.length > 0 && (
-            <div className="bg-[#161b22] border border-[#21262d] rounded-lg overflow-hidden">
-              <div className="px-4 py-3 border-b border-[#21262d]">
-                <h3 className="text-xs text-[#8b949e] uppercase tracking-widest font-medium">
-                  GDPR-Relevant Dependencies
-                </h3>
-              </div>
+            <CollapsibleSection title="GDPR-Relevant Dependencies" right={`${deps.length}`}>
               <div className="divide-y divide-[#21262d] max-h-48 overflow-auto">
                 {deps.map((d, i) => (
                   <div key={i} className="flex items-center justify-between px-4 py-2.5">
@@ -1658,7 +1681,7 @@ export default function ScanDetail() {
                   </div>
                 ))}
               </div>
-            </div>
+            </CollapsibleSection>
           )}
 
           {/* Potential signals (capability patterns, not confirmed flows) */}
