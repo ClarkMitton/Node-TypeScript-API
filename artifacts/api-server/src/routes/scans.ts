@@ -19,6 +19,7 @@ import {
 } from "@workspace/gdpr-scanner";
 import path from "path";
 import os from "os";
+import { waitUntil } from "@vercel/functions";
 import { logger } from "../lib/logger.js";
 import { z } from "zod";
 
@@ -235,7 +236,12 @@ router.post("/scans", async (req, res): Promise<void> => {
     completedAt: scan!.completedAt?.toISOString() ?? null,
   });
 
-  setImmediate(async () => {
+  // Run the scan as background work. On Vercel's fluid runtime, `waitUntil`
+  // keeps the function instance alive until the scan resolves (up to the 300s
+  // function timeout) — a bare setImmediate/fire-and-forget would be frozen the
+  // moment the response is sent. We still respond 201 immediately so the UI can
+  // navigate and poll for status.
+  const scanWork = (async () => {
     try {
       logger.info({ scanId: scan!.id, githubUrl }, "Starting GDPR scan");
 
@@ -268,7 +274,15 @@ router.post("/scans", async (req, res): Promise<void> => {
         .set({ status: "failed", error: String(err), completedAt: new Date() })
         .where(eq(scans.id, scan!.id));
     }
-  });
+  })();
+
+  // Ask the platform to keep the instance alive for the background scan. Outside
+  // a Vercel request context this throws — the promise still runs regardless.
+  try {
+    waitUntil(scanWork);
+  } catch {
+    /* not on Vercel (local/self-hosted): the long-lived server runs it anyway */
+  }
 });
 
 // ─── Get single scan (with mitigations + mitigated score) ─────────────────────
