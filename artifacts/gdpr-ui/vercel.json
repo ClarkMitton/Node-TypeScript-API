@@ -1,0 +1,6 @@
+{
+  "buildCommand": "BASE_PATH=/ PORT=3000 VITE_API_URL=https://node-type-script-api-api-server-h6e.vercel.app pnpm --filter \"@workspace/gdpr-ui\" run build",
+  "installCommand": "pnpm install",
+  "outputDirectory": "dist/public",
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+}

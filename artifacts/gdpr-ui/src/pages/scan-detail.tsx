@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import { useParams, useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import { useGetScan, getGetScanQueryKey, useDeleteScan, getListScansQueryKey, getGetScanStatsQueryKey, useCreateOpenaiConversation, getListOpenaiConversationsQueryKey } from "@workspace/api-client-react";
+import { API_BASE } from "@/lib/api-base";
 import { RiskBadge } from "@/components/risk-badge";
 import { ScoreGauge } from "@/components/score-gauge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -450,7 +451,7 @@ function ReviewQuestionList({ scanId, flowKey, questions, answers, onRefresh }: 
   async function answer(questionId: string, value: AnswerValue) {
     setSaving(questionId);
     try {
-      const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+      const base = API_BASE;
       await fetch(`${base}/api/scans/${scanId}/review-answers`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -592,7 +593,7 @@ function AuditCardPanel({ card, scanId, mitigations = [], reviewAnswers, resolve
     if (!description.trim() || saving) return;
     setSaving(true);
     try {
-      const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+      const base = API_BASE;
       await fetch(`${base}/api/scans/${scanId}/mitigations`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -609,7 +610,7 @@ function AuditCardPanel({ card, scanId, mitigations = [], reviewAnswers, resolve
   async function deleteMitigation(id: number) {
     setDeleting(id);
     try {
-      const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+      const base = API_BASE;
       await fetch(`${base}/api/scans/${scanId}/mitigations/${id}`, { method: "DELETE" });
       onRefresh();
     } finally {
@@ -899,7 +900,7 @@ function ScanChatPanel({ scanId, repoName, riskLevel, verifiedFlowCount }: ScanC
 
     try {
       const cid = await ensureConv();
-      const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+      const base = API_BASE;
       const res = await fetch(`${base}/api/openai/conversations/${cid}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

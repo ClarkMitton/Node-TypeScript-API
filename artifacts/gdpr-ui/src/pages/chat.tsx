@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { API_BASE } from "@/lib/api-base";
 import { Plus, Trash2, MessageSquare, Send, Loader2, Bot, User } from "lucide-react";
 
 interface StreamMessage {
@@ -114,7 +115,7 @@ export default function Chat() {
     setIsStreaming(true);
 
     try {
-      const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+      const base = API_BASE;
       const res = await fetch(`${base}/api/openai/conversations/${convId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
