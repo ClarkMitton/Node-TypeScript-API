@@ -194,6 +194,9 @@ export interface AuditSummary {
   // Plain-English data-residency / international-transfer prompts, one per
   // external service whose hosting region couldn't be confirmed from code.
   residencyNotes: string[];
+  // Camera / microphone / media-capture capability (photos/audio of people →
+  // possible biometric special-category and children's data).
+  mediaCapture?: { detected: boolean; evidence: ServiceEvidence[] };
 }
 
 export interface DependencyFinding {

@@ -14,7 +14,10 @@ import type {
   ClarifyingQuestion,
   DPIAScreening,
   ThirdPartyService,
+  ServiceEvidence,
 } from "./types.js";
+
+type MediaCapture = { detected: boolean; evidence: ServiceEvidence[] };
 
 const DEP_CATEGORY_WEIGHTS: Record<string, number> = {
   "AI/LLM provider": 10,
@@ -155,6 +158,10 @@ function riskLevelForFlow(flow: VerifiedFlow): RiskLevel {
   if (flow.tags.includes("CHILDREN_DATA")) {
     return flow.dataType === "IDENTIFIABLE" ? "HIGH" : "NEEDS_REVIEW";
   }
+  // File / media uploads: the content can't be read from code, but it may be
+  // photos or recordings of people (biometric / special-category, and often
+  // children). Ask before concluding rather than rating it LOW.
+  if (flow.source === "file_upload") return "NEEDS_REVIEW";
   if (flow.dataType === "IDENTIFIABLE" && flow.tags.includes("USER_DATA_TRANSFER")) return "HIGH";
   if (flow.dataType === "IDENTIFIABLE" && flow.tags.includes("USER_DATA_STORAGE")) return "HIGH";
   if (flow.dataType === "IDENTIFIABLE") return "MEDIUM";
@@ -168,6 +175,28 @@ function riskLevelForFlow(flow: VerifiedFlow): RiskLevel {
  * mapping each answer back to a DPIA screening trigger.
  */
 function clarifyingQuestionsForFlow(flow: VerifiedFlow): ClarifyingQuestion[] {
+  // File / media uploads: code can't read the file contents, so ask whether the
+  // uploads contain images/audio of people (biometric) and whether children are
+  // involved — either "yes" escalates to HIGH.
+  if (flow.source === "file_upload") {
+    return [
+      {
+        id: "upload-people-media",
+        question:
+          "Do the files uploaded here include photos, audio or video of people (faces or voices)?",
+        escalatesTo: "HIGH",
+        dpiaTrigger: "Possible biometric / special-category data (GDPR Art. 9)",
+      },
+      {
+        id: "upload-children",
+        question:
+          "Could the uploads relate to children or students (under 18) or other vulnerable people?",
+        escalatesTo: "HIGH",
+        dpiaTrigger: "Processing children's / vulnerable people's data",
+      },
+    ];
+  }
+
   if (!flow.isAI) return [];
   const provider = flow.aiProvider ?? "the AI provider";
   return [
@@ -201,9 +230,10 @@ function clarifyingQuestionsForFlow(flow: VerifiedFlow): ClarifyingQuestion[] {
 function buildAuditCards(flows: VerifiedFlow[]): AuditCard[] {
   return flows.map((flow) => {
     const questions = clarifyingQuestionsForFlow(flow);
+    const riskLevel = riskLevelForFlow(flow);
     return {
       title: flowTitle(flow),
-      riskLevel: riskLevelForFlow(flow),
+      riskLevel,
       confidence: flow.confidence,
       flow: `${flow.source} → ${flow.sink}`,
       evidence: {
@@ -215,7 +245,9 @@ function buildAuditCards(flows: VerifiedFlow[]): AuditCard[] {
       whyThisWasFlagged: whyFlagged(flow),
       whatIsNOTTrue: whatIsNOTTrue(),
       tags: flow.tags,
-      needsReview: flow.needsReview,
+      // A card is "under review" if the analyzer marked it so, or its rating is
+      // provisional (NEEDS_REVIEW) and it carries questions to settle it.
+      needsReview: flow.needsReview || (riskLevel === "NEEDS_REVIEW" && questions.length > 0),
       clarifyingQuestions: questions.length > 0 ? questions : undefined,
     };
   });
@@ -258,6 +290,7 @@ function buildDPOSummary(
   potentialFindings: Finding[],
   deps: DependencyFinding[],
   services: ThirdPartyService[],
+  mediaCapture: MediaCapture,
   overallRisk: RiskLevel,
 ): DPOSummary {
   const hasFlows = flows.length > 0;
@@ -369,6 +402,16 @@ function buildDPOSummary(
     });
   }
 
+  // Camera / microphone capture — likely photos or recordings of people, which
+  // can be biometric special-category data and (in education) children's data.
+  if (mediaCapture.detected) {
+    problems.push({
+      description: `This app can capture photos, audio or video (camera/microphone access was found in the code). Recordings of people are likely to contain biometric or special-category data — and in an education setting, children's data. Treat any such uploads as high-risk until you confirm what they contain. (${mediaCapture.evidence[0]?.file ?? "see code"})`,
+      badge: "CAPABILITY_ONLY",
+      colour: "RED",
+    });
+  }
+
   // ── What's working well ─────────────────────────────────────────────────────
   const hasServices = services.length > 0;
   const workingWell: string[] = [];
@@ -377,7 +420,14 @@ function buildDPOSummary(
   // Only claim "no third parties" when none were detected by any method.
   if (transferCount === 0 && !hasServices) workingWell.push("No data being sent to third-party services");
   if (storageCount === 0) workingWell.push("No confirmed database writes of personal information");
-  if (!hasAuth) workingWell.push("No user login or account system — so no user identity is being tracked");
+  // Only mention the absence of an auth library when there is genuinely no
+  // personal-data flow — otherwise it contradicts the confirmed findings. And
+  // keep it factual: a missing auth *library* doesn't prove there's no login,
+  // because Supabase/Firebase/custom auth wouldn't show up here.
+  const hasPersonalDataFlows = storageCount > 0 || transferCount > 0 || identifiableCount > 0;
+  if (!hasAuth && !hasPersonalDataFlows && !hasServices) {
+    workingWell.push("No dedicated authentication library was detected (note: Supabase/Firebase or custom login would not show up here)");
+  }
   if (!hasAnalytics && !services.some((s) => s.category === "Analytics")) workingWell.push("No advertising or analytics tracking libraries found");
 
   // ── What you need to do ─────────────────────────────────────────────────────
@@ -433,6 +483,14 @@ function buildDPOSummary(
       action: "Make sure stored personal data can be deleted when a user asks (the 'Right to Erasure' under GDPR Article 17). Add a way for users to request deletion of their account or data.",
       type: "CODE_CHANGE",
       priority: "MEDIUM",
+    });
+  }
+
+  if (mediaCapture.detected) {
+    actionItems.push({
+      action: "This app captures photos, audio or video. If these show or record identifiable people, that is likely biometric / special-category data (GDPR Article 9) and, for under-18s, children's data (Article 8). You need an Article 9 condition, a DPIA, clear consent/notice, strict retention limits, and access controls. Confirm exactly what is captured and stored.",
+      type: "DPIA",
+      priority: "HIGH",
     });
   }
 
@@ -515,6 +573,7 @@ function buildDPIAScreening(
   flows: VerifiedFlow[],
   deps: DependencyFinding[],
   services: ThirdPartyService[] = [],
+  mediaCapture: MediaCapture = { detected: false, evidence: [] },
 ): DPIAScreening {
   const hasAI =
     flows.some((f) => f.isAI) ||
@@ -522,6 +581,7 @@ function buildDPIAScreening(
     services.some((s) => s.isAI);
   const hasSpecialCategory = flows.some((f) => f.tags.includes("SPECIAL_CATEGORY_DATA"));
   const hasChildren = flows.some((f) => f.tags.includes("CHILDREN_DATA"));
+  const hasMediaCapture = mediaCapture.detected;
   // A third-party integration of any kind is a potential transfer / disclosure
   // to a new recipient — a DPIA screening trigger in its own right.
   const hasTransfer = flows.some((f) => f.tags.includes("USER_DATA_TRANSFER")) || services.length > 0;
@@ -533,6 +593,7 @@ function buildDPIAScreening(
   if (hasAI) detectedTriggers.push(`Uses AI / new technology${aiServiceNames.length ? ` (${aiServiceNames.join(", ")})` : ""}`);
   if (hasSpecialCategory) detectedTriggers.push("May process special-category data (health, ethnicity, religion, biometrics)");
   if (hasChildren) detectedTriggers.push("May process children's or vulnerable people's data");
+  if (hasMediaCapture) detectedTriggers.push("Captures photos / audio / video of people (possible biometric special-category data)");
   if (hasTransfer) {
     const provs = [...aiServiceNames, ...nonAiServiceNames];
     detectedTriggers.push(`Sends data to third-party service(s)${provs.length ? ` (${provs.join(", ")})` : ""} — possible international transfer`);
@@ -574,11 +635,22 @@ function buildDPIAScreening(
       escalatesTo: "HIGH",
       dpiaTrigger: "Systematic monitoring; tracking of location or behaviour",
     },
+    ...(hasMediaCapture
+      ? [
+          {
+            id: "dpia-media-capture",
+            question:
+              "We detected camera/microphone use. Do the photos, audio or video include identifiable people (faces or voices)?",
+            escalatesTo: "HIGH" as RiskLevel,
+            dpiaTrigger: "Biometric / special-category data captured from people",
+          },
+        ]
+      : []),
   ];
 
   // A DPIA is recommended if code already evidences a screening trigger.
   // (Even with none auto-detected, a "yes" to any question above means do one.)
-  const dpiaRecommended = hasAI || hasSpecialCategory || hasChildren;
+  const dpiaRecommended = hasAI || hasSpecialCategory || hasChildren || hasMediaCapture;
 
   return { dpiaRecommended, detectedTriggers, questions };
 }
@@ -639,6 +711,7 @@ function buildAuditSummary(
   potentialFindings: Finding[],
   deps: DependencyFinding[],
   services: ThirdPartyService[],
+  mediaCapture: MediaCapture,
   overallRisk: RiskLevel,
   confidence: number,
 ): AuditSummary {
@@ -675,8 +748,8 @@ function buildAuditSummary(
     conclusion = `${flows.length} verified personal data flow(s) detected: ${flowSummary}. Each flow has a confirmed user input source linked to a data sink.`;
   }
 
-  const dpoSummary = buildDPOSummary(flows, potentialFindings, deps, services, overallRisk);
-  const dpiaScreening = buildDPIAScreening(flows, deps, services);
+  const dpoSummary = buildDPOSummary(flows, potentialFindings, deps, services, mediaCapture, overallRisk);
+  const dpiaScreening = buildDPIAScreening(flows, deps, services, mediaCapture);
   const residencyNotes = buildResidencyNotes(services);
 
   return {
@@ -695,6 +768,7 @@ function buildAuditSummary(
     dpiaScreening,
     thirdPartyServices: services,
     residencyNotes,
+    mediaCapture,
   };
 }
 
@@ -812,6 +886,7 @@ export function buildRepoIndex(
   deps: DependencyFinding[],
   verifiedFlows: VerifiedFlow[],
   detectedServices: ThirdPartyService[] = [],
+  mediaCapture: MediaCapture = { detected: false, evidence: [] },
 ): RepoIndex {
   const potentialFindings = findings.filter((f) => !f.isVerifiedFlow);
   const services = mergeFlowServices(detectedServices, verifiedFlows);
@@ -820,14 +895,16 @@ export function buildRepoIndex(
 
   // A detected AI service (even capability-only, with no traced data flow) must
   // never be presented as "all clear" — escalate a quiet rating to NEEDS_REVIEW
-  // so the report asks what is actually sent before concluding.
+  // so the report asks what is actually sent before concluding. The same applies
+  // to confirmed file/media uploads (content can't be read from code).
   const hasAIService = services.some((s) => s.isAI);
-  if (hasAIService && (level === "LOW" || level === "INSUFFICIENT_EVIDENCE")) {
+  const hasUploadFlow = verifiedFlows.some((f) => f.source === "file_upload");
+  if ((hasAIService || hasUploadFlow || mediaCapture.detected) && (level === "LOW" || level === "INSUFFICIENT_EVIDENCE")) {
     level = "NEEDS_REVIEW";
   }
 
   const auditCards = buildAuditCards(verifiedFlows);
-  const auditSummary = buildAuditSummary(repoName, verifiedFlows, potentialFindings, deps, services, level, confidence);
+  const auditSummary = buildAuditSummary(repoName, verifiedFlows, potentialFindings, deps, services, mediaCapture, level, confidence);
 
   // Annotate findings that correspond to verified flows
   const annotatedFindings: Finding[] = findings.map((f) => {
