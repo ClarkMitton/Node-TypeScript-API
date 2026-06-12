@@ -72,6 +72,9 @@ CREATE TABLE IF NOT EXISTS "review_answers" (
   CONSTRAINT "review_answers_scan_flow_question_uq" UNIQUE("scan_id","flow_key","question_id")
 );
 
+-- Added after initial release: optional app description on scans.
+ALTER TABLE "scans" ADD COLUMN IF NOT EXISTS "description" text;
+
 DO $$ BEGIN
   ALTER TABLE "messages" ADD CONSTRAINT "messages_conversation_id_conversations_id_fk" FOREIGN KEY ("conversation_id") REFERENCES "public"."conversations"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION WHEN duplicate_object THEN null; END $$;

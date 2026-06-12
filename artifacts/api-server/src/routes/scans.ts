@@ -21,6 +21,7 @@ import path from "path";
 import os from "os";
 import { waitUntil } from "@vercel/functions";
 import { logger } from "../lib/logger.js";
+import { generateScreeningQuestions } from "../lib/ai-screening.js";
 import { z } from "zod";
 
 const router: IRouter = Router();
@@ -217,11 +218,15 @@ router.post("/scans", async (req, res): Promise<void> => {
   }
 
   const { githubUrl } = parsed.data;
+  // Optional app description (read directly so we don't have to regenerate the
+  // shared CreateScanBody zod schema).
+  const rawDescription = (req.body as Record<string, unknown> | undefined)?.["description"];
+  const description = typeof rawDescription === "string" ? rawDescription.slice(0, 4000) : null;
   const cleaned = githubUrl.replace(/\.git$/, "").replace(/\/$/, "");
   const parts = cleaned.split("/");
   const repoName = `${parts[parts.length - 2] ?? "unknown"}/${parts[parts.length - 1] ?? "repo"}`;
 
-  const [scan] = await db.insert(scans).values({ githubUrl, repoName, status: "running" }).returning();
+  const [scan] = await db.insert(scans).values({ githubUrl, repoName, description, status: "running" }).returning();
 
   res.status(201).json({
     id: scan!.id,
@@ -248,6 +253,20 @@ router.post("/scans", async (req, res): Promise<void> => {
       const index = await runFullScan(githubUrl, REPOS_DIR, (progress) => {
         logger.info({ scanId: scan!.id, stage: progress.stage }, progress.message);
       });
+
+      // When an app description was supplied, generate AI-tailored screening
+      // questions from the description + findings and merge them into the DPIA
+      // screening (falls back silently to the rule-based questions on failure).
+      if (description && index.auditSummary?.dpiaScreening) {
+        const aiQuestions = await generateScreeningQuestions(description, index);
+        if (aiQuestions.length > 0) {
+          index.auditSummary.dpiaScreening.questions = [
+            ...index.auditSummary.dpiaScreening.questions,
+            ...aiQuestions,
+          ];
+          logger.info({ scanId: scan!.id, count: aiQuestions.length }, "Merged AI screening questions");
+        }
+      }
 
       await db
         .update(scans)

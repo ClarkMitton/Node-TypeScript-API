@@ -6,6 +6,9 @@ export const scans = pgTable("scans", {
   id: serial("id").primaryKey(),
   githubUrl: text("github_url").notNull(),
   repoName: text("repo_name").notNull(),
+  // Optional plain-English description of the app, supplied at scan time, used to
+  // tailor the AI-generated screening questions.
+  description: text("description"),
   status: text("status").notNull().default("pending"), // pending | running | done | failed
   gdprScore: integer("gdpr_score"),
   riskLevel: text("risk_level"),

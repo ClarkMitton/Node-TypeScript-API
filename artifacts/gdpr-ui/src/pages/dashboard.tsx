@@ -7,7 +7,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   useListScans,
   useGetScanStats,
-  useCreateScan,
   getListScansQueryKey,
   getGetScanStatsQueryKey,
 } from "@workspace/api-client-react";
@@ -18,9 +17,11 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "wouter";
 import { Github, Scan, TrendingUp, AlertTriangle, Shield, Loader2 } from "lucide-react";
+import { API_BASE } from "@/lib/api-base";
 
 const scanSchema = z.object({
   githubUrl: z.string().url("Enter a valid GitHub URL"),
+  description: z.string().max(4000).optional(),
 });
 type ScanForm = z.infer<typeof scanSchema>;
 
@@ -53,27 +54,35 @@ export default function Dashboard() {
   const qc = useQueryClient();
   const { data: stats, isLoading: statsLoading } = useGetScanStats();
   const { data: scans, isLoading: scansLoading } = useListScans();
-  const createScan = useCreateScan();
-  const [pendingId, setPendingId] = useState<number | null>(null);
+  const [creating, setCreating] = useState(false);
 
   const form = useForm<ScanForm>({
     resolver: zodResolver(scanSchema),
-    defaultValues: { githubUrl: "" },
+    defaultValues: { githubUrl: "", description: "" },
   });
 
   async function onSubmit(values: ScanForm) {
-    createScan.mutate(
-      { data: { githubUrl: values.githubUrl } },
-      {
-        onSuccess: (scan) => {
-          qc.invalidateQueries({ queryKey: getListScansQueryKey() });
-          qc.invalidateQueries({ queryKey: getGetScanStatsQueryKey() });
-          setPendingId(scan.id);
-          form.reset();
-          setLocation(`/scans/${scan.id}`);
-        },
-      },
-    );
+    // Posted via raw fetch (not the generated client) so we can include the
+    // optional description without regenerating the shared request schema.
+    setCreating(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/scans`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          githubUrl: values.githubUrl,
+          description: values.description?.trim() || undefined,
+        }),
+      });
+      if (!res.ok) return;
+      const scan = (await res.json()) as { id: number };
+      qc.invalidateQueries({ queryKey: getListScansQueryKey() });
+      qc.invalidateQueries({ queryKey: getGetScanStatsQueryKey() });
+      form.reset();
+      setLocation(`/scans/${scan.id}`);
+    } finally {
+      setCreating(false);
+    }
   }
 
   return (
@@ -93,37 +102,56 @@ export default function Dashboard() {
           <span className="text-sm font-medium text-[#c9d1d9]">Scan a Repository</span>
         </div>
         <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="flex gap-3">
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-3">
+            <div className="flex gap-3">
+              <FormField
+                control={form.control}
+                name="githubUrl"
+                render={({ field }) => (
+                  <FormItem className="flex-1">
+                    <FormControl>
+                      <Input
+                        {...field}
+                        placeholder="https://github.com/owner/repo"
+                        className="bg-[#0d1117] border-[#30363d] text-[#c9d1d9] placeholder:text-[#484f58] focus-visible:ring-[#388bfd] h-9"
+                      />
+                    </FormControl>
+                    <FormMessage className="text-[#f97583] text-xs" />
+                  </FormItem>
+                )}
+              />
+              <Button
+                type="submit"
+                disabled={creating}
+                className="bg-[#1f6feb] hover:bg-[#388bfd] text-white h-9 px-4 text-sm"
+              >
+                {creating ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <>
+                    <Scan className="h-3.5 w-3.5 mr-1.5" />
+                    Scan
+                  </>
+                )}
+              </Button>
+            </div>
             <FormField
               control={form.control}
-              name="githubUrl"
+              name="description"
               render={({ field }) => (
-                <FormItem className="flex-1">
+                <FormItem>
                   <FormControl>
-                    <Input
+                    <textarea
                       {...field}
-                      placeholder="https://github.com/owner/repo"
-                      className="bg-[#0d1117] border-[#30363d] text-[#c9d1d9] placeholder:text-[#484f58] focus-visible:ring-[#388bfd] h-9"
+                      rows={3}
+                      placeholder="Optional but recommended: describe what this app does, who uses it (e.g. students/children), and what data it handles. This sharpens the review questions and the risk rating."
+                      className="w-full rounded-md bg-[#0d1117] border border-[#30363d] text-[#c9d1d9] placeholder:text-[#484f58] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[#388bfd] text-sm px-3 py-2 resize-y"
                     />
                   </FormControl>
                   <FormMessage className="text-[#f97583] text-xs" />
                 </FormItem>
               )}
             />
-            <Button
-              type="submit"
-              disabled={createScan.isPending}
-              className="bg-[#1f6feb] hover:bg-[#388bfd] text-white h-9 px-4 text-sm"
-            >
-              {createScan.isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <>
-                  <Scan className="h-3.5 w-3.5 mr-1.5" />
-                  Scan
-                </>
-              )}
-            </Button>
           </form>
         </Form>
       </div>
