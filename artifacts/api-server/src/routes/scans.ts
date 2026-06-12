@@ -18,12 +18,16 @@ import {
   type ReviewAnswerInput,
 } from "@workspace/gdpr-scanner";
 import path from "path";
+import os from "os";
 import { logger } from "../lib/logger.js";
 import { z } from "zod";
 
 const router: IRouter = Router();
 
-const REPOS_DIR = path.resolve(process.cwd(), "repos");
+// Use the OS temp dir for cloned/downloaded repos. On serverless platforms
+// (Vercel) the deployment filesystem is read-only except the temp dir (/tmp),
+// so process.cwd() ("/var/task") can't be written to.
+const REPOS_DIR = path.join(os.tmpdir(), "gdpr-scanner-repos");
 
 // ─── Mitigation score reduction factors ───────────────────────────────────────
 
